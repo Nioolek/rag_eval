@@ -1,0 +1,321 @@
+"""
+Evaluation runner with concurrent execution support.
+Implements Template Method pattern for standardized evaluation workflow.
+"""
+
+import asyncio
+import time
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
+
+from ..models.annotation import Annotation
+from ..models.evaluation_result import EvaluationResult, EvaluationRun
+from ..models.metric_result import MetricCategory, MetricResult
+from ..rag.base_adapter import RAGAdapter
+from ..rag.mock_adapter import MockRAGAdapter
+from ..storage.base import StorageBackend
+from ..storage.storage_factory import get_storage
+from ..core.config import get_config
+from ..core.exceptions import EvaluationError
+from ..core.logging import logger
+
+from .metrics.base import MetricContext
+from .metrics.metric_factory import MetricFactory
+from .llm_evaluator import get_llm_evaluator
+from .result_manager import ResultManager, get_result_manager
+
+
+@dataclass
+class EvaluationProgress:
+    """Progress information for running evaluation."""
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    current_query: str = ""
+    start_time: float = 0.0
+
+    @property
+    def elapsed_seconds(self) -> float:
+        return time.time() - self.start_time
+
+    @property
+    def progress_percent(self) -> float:
+        return (self.completed / self.total * 100) if self.total > 0 else 0
+
+    @property
+    def estimated_remaining_seconds(self) -> float:
+        if self.completed == 0:
+            return 0
+        rate = self.completed / self.elapsed_seconds
+        remaining = self.total - self.completed
+        return remaining / rate if rate > 0 else 0
+
+
+class EvaluationRunner:
+    """
+    Main evaluation runner with concurrent execution.
+    Supports single/dual RAG interface comparison.
+    """
+
+    def __init__(
+        self,
+        max_concurrent: int = 10,
+        timeout: int = 120,
+    ):
+        self.max_concurrent = max_concurrent
+        self.timeout = timeout
+        self._rag_adapters: dict[str, RAGAdapter] = {}
+        self._metrics: list = []
+        self._process_pool: Optional[ProcessPoolExecutor] = None
+        self._running = False
+        self._cancelled = False
+        self._progress: Optional[EvaluationProgress] = None
+        self._progress_callback: Optional[Callable] = None
+
+    def set_rag_adapter(
+        self,
+        adapter: RAGAdapter,
+        name: str = "default",
+    ) -> None:
+        """Set a RAG adapter for evaluation."""
+        self._rag_adapters[name] = adapter
+        logger.info(f"Set RAG adapter: {name}")
+
+    def set_metrics(
+        self,
+        metric_names: list[str],
+        config: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Set metrics to use for evaluation."""
+        self._metrics = MetricFactory.create_all(metric_names, config)
+        logger.info(f"Set {len(self._metrics)} metrics: {[m.name for m in self._metrics]}")
+
+    def set_progress_callback(self, callback: Callable) -> None:
+        """Set callback for progress updates."""
+        self._progress_callback = callback
+
+    async def run(
+        self,
+        annotations: list[Annotation],
+        run_name: str = "",
+        rag_interfaces: Optional[list[str]] = None,
+    ) -> EvaluationRun:
+        """
+        Run evaluation on annotations.
+
+        Args:
+            annotations: List of annotations to evaluate
+            run_name: Name for this evaluation run
+            rag_interfaces: RAG interface names to use (default: ["default"])
+
+        Returns:
+            EvaluationRun with results
+        """
+        if self._running:
+            raise EvaluationError("Evaluation already running")
+
+        self._running = True
+        self._cancelled = False
+
+        rag_interfaces = rag_interfaces or list(self._rag_adapters.keys()) or ["default"]
+
+        run = EvaluationRun(
+            name=run_name,
+            rag_interfaces=rag_interfaces,
+            selected_metrics=[m.name for m in self._metrics],
+            concurrent_workers=self.max_concurrent,
+            total_annotations=len(annotations),
+            status="running",
+        )
+
+        self._progress = EvaluationProgress(
+            total=len(annotations) * len(rag_interfaces),
+            start_time=time.time(),
+        )
+
+        # Initialize process pool for CPU-intensive work
+        self._process_pool = ProcessPoolExecutor(max_workers=4)
+
+        # Get LLM evaluator
+        llm_evaluator = None
+        if any(m.requires_llm for m in self._metrics):
+            llm_evaluator = await get_llm_evaluator()
+
+        try:
+            # Save initial run
+            result_manager = await get_result_manager()
+            await result_manager.save_run(run)
+
+            # Run evaluation with semaphore for concurrency control
+            semaphore = asyncio.Semaphore(self.max_concurrent)
+
+            tasks = []
+            for annotation in annotations:
+                for rag_interface in rag_interfaces:
+                    if self._cancelled:
+                        break
+                    task = self._evaluate_single(
+                        annotation=annotation,
+                        rag_interface=rag_interface,
+                        run_id=run.id,
+                        llm_evaluator=llm_evaluator,
+                        semaphore=semaphore,
+                    )
+                    tasks.append(task)
+
+                if self._cancelled:
+                    break
+
+            # Execute tasks
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Collect results
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error(f"Evaluation task failed: {result}")
+                    run.failed_count += 1
+                elif isinstance(result, EvaluationResult):
+                    run.add_result(result)
+
+            # Finish run
+            run.finish()
+            await result_manager.save_run(run)
+
+            logger.info(
+                f"Evaluation run completed: {run.completed_count}/{run.total_annotations} "
+                f"in {run.duration_seconds:.1f}s"
+            )
+
+        except Exception as e:
+            run.status = "failed"
+            logger.error(f"Evaluation run failed: {e}")
+            raise EvaluationError(f"Evaluation run failed: {e}")
+
+        finally:
+            self._running = False
+            if self._process_pool:
+                self._process_pool.shutdown(wait=False)
+                self._process_pool = None
+
+        return run
+
+    async def _evaluate_single(
+        self,
+        annotation: Annotation,
+        rag_interface: str,
+        run_id: str,
+        llm_evaluator: Any,
+        semaphore: asyncio.Semaphore,
+    ) -> EvaluationResult:
+        """Evaluate a single annotation."""
+        async with semaphore:
+            if self._cancelled:
+                return EvaluationResult(
+                    annotation_id=annotation.id,
+                    run_id=run_id,
+                    rag_interface=rag_interface,
+                    success=False,
+                    error_message="Evaluation cancelled",
+                )
+
+            start_time = time.time()
+            result = EvaluationResult(
+                annotation_id=annotation.id,
+                run_id=run_id,
+                rag_interface=rag_interface,
+                annotation=annotation,
+            )
+
+            try:
+                # Get RAG response
+                adapter = self._rag_adapters.get(rag_interface)
+                if adapter is None:
+                    # Use mock adapter if not configured
+                    adapter = MockRAGAdapter(name=rag_interface)
+
+                rag_response = await adapter.query_from_annotation(annotation)
+                result.rag_response = rag_response
+
+                # Calculate metrics
+                context = MetricContext(
+                    annotation=annotation,
+                    rag_response=rag_response,
+                    llm_client=llm_evaluator.llm if llm_evaluator else None,
+                )
+
+                for metric in self._metrics:
+                    if self._cancelled:
+                        break
+                    try:
+                        metric_result = await metric.evaluate(context)
+                        result.add_metric(metric_result)
+                    except Exception as e:
+                        logger.warning(f"Metric {metric.name} failed: {e}")
+                        result.add_metric(
+                            metric._error_result(str(e))
+                        )
+
+                result.success = True
+
+            except Exception as e:
+                result.success = False
+                result.error_message = str(e)
+                logger.error(f"Evaluation failed for annotation {annotation.id}: {e}")
+
+            finally:
+                result.duration_ms = (time.time() - start_time) * 1000
+
+                # Update progress
+                if self._progress:
+                    self._progress.completed += 1
+                    self._progress.current_query = annotation.query
+
+                    if self._progress_callback:
+                        await self._safe_callback()
+
+            return result
+
+    async def _safe_callback(self) -> None:
+        """Safely call progress callback."""
+        if self._progress_callback:
+            try:
+                if asyncio.iscoroutinefunction(self._progress_callback):
+                    await self._progress_callback(self._progress)
+                else:
+                    self._progress_callback(self._progress)
+            except Exception as e:
+                logger.warning(f"Progress callback failed: {e}")
+
+    def cancel(self) -> None:
+        """Cancel the running evaluation."""
+        self._cancelled = True
+        logger.info("Evaluation cancellation requested")
+
+    def get_progress(self) -> Optional[EvaluationProgress]:
+        """Get current progress."""
+        return self._progress
+
+
+async def create_runner(
+    max_concurrent: Optional[int] = None,
+    timeout: Optional[int] = None,
+) -> EvaluationRunner:
+    """
+    Create an evaluation runner with default configuration.
+
+    Args:
+        max_concurrent: Maximum concurrent evaluations
+        timeout: Evaluation timeout in seconds
+
+    Returns:
+        Configured EvaluationRunner
+    """
+    config = get_config()
+
+    runner = EvaluationRunner(
+        max_concurrent=max_concurrent or config.evaluation.max_concurrent,
+        timeout=timeout or config.evaluation.timeout,
+    )
+
+    return runner
