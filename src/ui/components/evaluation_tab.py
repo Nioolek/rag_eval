@@ -1,5 +1,6 @@
 """
 Evaluation tab component for Gradio UI.
+Enhanced with modern styling and improved UX.
 """
 
 import asyncio
@@ -18,161 +19,198 @@ from ...core.logging import logger
 
 
 def create_evaluation_tab() -> gr.Tab:
-    """Create the evaluation configuration and execution tab."""
+    """Create the evaluation configuration and execution tab with enhanced styling."""
 
     # State variables
     runner_state = gr.State(None)
     running_state = gr.State(False)
 
-    with gr.Tab("评测执行") as tab:
-        gr.Markdown("### RAG 评测配置与执行")
+    with gr.Tab("⚡ 评测执行") as tab:
+        # Header
+        gr.Markdown("""
+        ### 🚀 RAG 评测配置与执行
+        配置评测参数、选择指标、执行批量评测任务
+        """)
 
         with gr.Row():
             # Left column: Configuration
             with gr.Column(scale=2):
-                gr.Markdown("#### 评测配置")
-
                 # RAG Interface Configuration
-                gr.Markdown("##### RAG 接口配置")
+                with gr.Group(elem_classes=["gr-box"]):
+                    gr.Markdown("**🔗 RAG 接口配置**")
 
-                with gr.Row():
-                    dual_mode = gr.Checkbox(
-                        label="双接口对比模式",
-                        value=False,
-                        info="启用后将使用两个 RAG 接口进行对比评测",
-                    )
+                    with gr.Row():
+                        dual_mode = gr.Checkbox(
+                            label="⚖️ 双接口对比模式",
+                            value=False,
+                            info="启用后将使用两个 RAG 接口进行对比评测",
+                        )
 
-                with gr.Row():
-                    rag_url_1 = gr.Textbox(
-                        label="RAG 接口 1 URL",
-                        placeholder="http://localhost:8000",
-                        value="",
-                    )
-                    rag_url_2 = gr.Textbox(
-                        label="RAG 接口 2 URL",
-                        placeholder="http://localhost:8001",
-                        value="",
-                        visible=False,
-                    )
+                    with gr.Row():
+                        rag_url_1 = gr.Textbox(
+                            label="RAG 接口 1 URL",
+                            placeholder="http://localhost:8000",
+                            value="",
+                            scale=1,
+                        )
+                        rag_url_2 = gr.Textbox(
+                            label="RAG 接口 2 URL",
+                            placeholder="http://localhost:8001",
+                            value="",
+                            visible=False,
+                            scale=1,
+                        )
 
                 # Metrics selection
-                gr.Markdown("##### 评测指标选择")
+                with gr.Group(elem_classes=["gr-box"]):
+                    gr.Markdown("**📊 评测指标选择**")
 
-                with gr.Row():
-                    select_all_btn = gr.Button("全选", size="sm")
-                    deselect_all_btn = gr.Button("取消全选", size="sm")
-
-                # Get available metrics
-                registry = get_registry()
-                all_metrics = registry.list_all()
-
-                with gr.Row():
-                    # Retrieval metrics
-                    with gr.Column():
-                        gr.Markdown("**检索指标**")
-                        retrieval_metrics = gr.CheckboxGroup(
-                            choices=registry.list_by_category(
-                                __import__('src.models.metric_result', fromlist=['MetricCategory']).MetricCategory.RETRIEVAL
-                            ),
-                            value=registry.list_by_category(
-                                __import__('src.models.metric_result', fromlist=['MetricCategory']).MetricCategory.RETRIEVAL
-                            )[:3],
-                            label="",
+                    with gr.Row():
+                        select_all_btn = gr.Button(
+                            "✅ 全选",
+                            variant="secondary",
+                            size="sm",
+                        )
+                        deselect_all_btn = gr.Button(
+                            "⬜ 取消全选",
+                            variant="secondary",
+                            size="sm",
                         )
 
-                    # Generation metrics
-                    with gr.Column():
-                        gr.Markdown("**生成指标**")
-                        generation_metrics = gr.CheckboxGroup(
-                            choices=registry.list_by_category(
-                                __import__('src.models.metric_result', fromlist=['MetricCategory']).MetricCategory.GENERATION
-                            ),
-                            value=[],
-                            label="",
-                        )
+                    # Get available metrics
+                    registry = get_registry()
 
-                with gr.Row():
-                    # FAQ metrics
-                    with gr.Column():
-                        gr.Markdown("**FAQ 指标**")
-                        faq_metrics = gr.CheckboxGroup(
-                            choices=registry.list_by_category(
-                                __import__('src.models.metric_result', fromlist=['MetricCategory']).MetricCategory.FAQ
-                            ),
-                            value=[],
-                            label="",
-                        )
+                    with gr.Row():
+                        # Retrieval metrics
+                        with gr.Column():
+                            gr.Markdown("**🔍 检索指标**")
+                            retrieval_metrics = gr.CheckboxGroup(
+                                choices=registry.list_by_category(
+                                    __import__('src.models.metric_result', fromlist=['MetricCategory']).MetricCategory.RETRIEVAL
+                                ),
+                                value=registry.list_by_category(
+                                    __import__('src.models.metric_result', fromlist=['MetricCategory']).MetricCategory.RETRIEVAL
+                                )[:3],
+                                label="",
+                            )
 
-                    # Comprehensive metrics
-                    with gr.Column():
-                        gr.Markdown("**综合指标**")
-                        comprehensive_metrics = gr.CheckboxGroup(
-                            choices=registry.list_by_category(
-                                __import__('src.models.metric_result', fromlist=['MetricCategory']).MetricCategory.COMPREHENSIVE
-                            ),
-                            value=[],
-                            label="",
-                        )
+                        # Generation metrics
+                        with gr.Column():
+                            gr.Markdown("**✍️ 生成指标**")
+                            generation_metrics = gr.CheckboxGroup(
+                                choices=registry.list_by_category(
+                                    __import__('src.models.metric_result', fromlist=['MetricCategory']).MetricCategory.GENERATION
+                                ),
+                                value=[],
+                                label="",
+                            )
+
+                    with gr.Row():
+                        # FAQ metrics
+                        with gr.Column():
+                            gr.Markdown("**🎯 FAQ 指标**")
+                            faq_metrics = gr.CheckboxGroup(
+                                choices=registry.list_by_category(
+                                    __import__('src.models.metric_result', fromlist=['MetricCategory']).MetricCategory.FAQ
+                                ),
+                                value=[],
+                                label="",
+                            )
+
+                        # Comprehensive metrics
+                        with gr.Column():
+                            gr.Markdown("**📈 综合指标**")
+                            comprehensive_metrics = gr.CheckboxGroup(
+                                choices=registry.list_by_category(
+                                    __import__('src.models.metric_result', fromlist=['MetricCategory']).MetricCategory.COMPREHENSIVE
+                                ),
+                                value=[],
+                                label="",
+                            )
 
                 # Concurrency settings
-                gr.Markdown("##### 执行配置")
+                with gr.Group(elem_classes=["gr-box"]):
+                    gr.Markdown("**⚙️ 执行配置**")
 
-                with gr.Row():
-                    concurrency = gr.Slider(
-                        minimum=1,
-                        maximum=50,
-                        value=10,
-                        step=1,
-                        label="并发数",
-                    )
-                    eval_timeout = gr.Slider(
-                        minimum=30,
-                        maximum=300,
-                        value=120,
-                        step=10,
-                        label="超时时间 (秒)",
-                    )
+                    with gr.Row():
+                        concurrency = gr.Slider(
+                            minimum=1,
+                            maximum=50,
+                            value=10,
+                            step=1,
+                            label="🔢 并发数",
+                            scale=1,
+                        )
+                        eval_timeout = gr.Slider(
+                            minimum=30,
+                            maximum=300,
+                            value=120,
+                            step=10,
+                            label="⏱️ 超时时间 (秒)",
+                            scale=1,
+                        )
 
-                run_name = gr.Textbox(
-                    label="评测名称",
-                    placeholder="输入评测名称（可选）",
-                )
+                    run_name = gr.Textbox(
+                        label="📝 评测名称",
+                        placeholder="输入评测名称（可选）",
+                    )
 
             # Right column: Execution
             with gr.Column(scale=2):
-                gr.Markdown("#### 评测执行")
+                with gr.Group(elem_classes=["gr-box"]):
+                    gr.Markdown("**▶️ 评测执行**")
 
-                with gr.Row():
-                    start_btn = gr.Button("🚀 开始评测", variant="primary", size="lg")
-                    cancel_btn = gr.Button("⏹ 取消", variant="stop", size="lg", visible=False)
+                    with gr.Row():
+                        start_btn = gr.Button(
+                            "🚀 开始评测",
+                            variant="primary",
+                            size="lg",
+                            scale=2,
+                        )
+                        cancel_btn = gr.Button(
+                            "⏹ 取消",
+                            variant="stop",
+                            size="lg",
+                            visible=False,
+                            scale=1,
+                        )
 
-                progress_bar = gr.Slider(
-                    minimum=0,
-                    maximum=100,
-                    value=0,
-                    label="进度",
-                    interactive=False,
-                )
+                    progress_bar = gr.Slider(
+                        minimum=0,
+                        maximum=100,
+                        value=0,
+                        label="📊 进度",
+                        interactive=False,
+                    )
 
-                progress_text = gr.Markdown("准备就绪")
+                    progress_text = gr.Markdown(
+                        "🟢 准备就绪",
+                        elem_classes=["progress-text"],
+                    )
 
-                status_display = gr.JSON(label="评测状态")
+                    status_display = gr.JSON(
+                        label="评测状态",
+                        value={"status": "ready"},
+                    )
 
         # Results preview
-        with gr.Row():
-            with gr.Column():
-                gr.Markdown("#### 最近评测结果")
-                results_table = gr.Dataframe(
-                    headers=["运行ID", "名称", "状态", "完成/总数", "时间"],
-                    datatype=["str", "str", "str", "str", "str"],
-                    interactive=False,
-                )
+        with gr.Group(elem_classes=["gr-box"]):
+            gr.Markdown("**📋 最近评测结果**")
+            results_table = gr.Dataframe(
+                headers=["运行 ID", "名称", "状态", "完成/总数", "耗时"],
+                datatype=["str", "str", "str", "str", "str"],
+                interactive=False,
+                label="评测历史记录",
+            )
 
-        # Event handlers
+        # ===== Event Handlers =====
+        
         def toggle_dual_mode(is_dual):
+            """Toggle dual mode visibility."""
             return gr.update(visible=is_dual)
 
         def select_all_metrics():
+            """Select all metrics."""
             retrieval = registry.list_by_category(
                 __import__('src.models.metric_result', fromlist=['MetricCategory']).MetricCategory.RETRIEVAL
             )
@@ -193,6 +231,7 @@ def create_evaluation_tab() -> gr.Tab:
             )
 
         def deselect_all_metrics():
+            """Deselect all metrics."""
             return (
                 gr.update(value=[]),
                 gr.update(value=[]),
@@ -205,6 +244,7 @@ def create_evaluation_tab() -> gr.Tab:
             ret_m, gen_m, faq_m, comp_m,
             conc, timeout, name
         ):
+            """Start evaluation process."""
             # Combine selected metrics
             selected_metrics = list(ret_m) + list(gen_m) + list(faq_m) + list(comp_m)
 
@@ -268,15 +308,15 @@ def create_evaluation_tab() -> gr.Tab:
             def on_progress(progress):
                 return (
                     gr.update(value=progress.progress_percent),
-                    f"正在评测: {progress.current_query[:50]}... ({progress.completed}/{progress.total})",
+                    f"正在评测：{progress.current_query[:50]}... ({progress.completed}/{progress.total})",
                 )
 
-            runner.set_progress_callback(lambda p: None)  # Will update via yield
+            runner.set_progress_callback(lambda p: None)
 
             # Run evaluation
             yield (
                 gr.update(value=0),
-                f"开始评测 {len(annotations)} 条数据...",
+                "🔄 开始评测...",
                 {"status": "running", "total": len(annotations)},
                 gr.update(visible=False),
                 gr.update(visible=True),
@@ -294,12 +334,14 @@ def create_evaluation_tab() -> gr.Tab:
                     "completed": run.completed_count,
                     "failed": run.failed_count,
                     "duration": f"{run.duration_seconds:.1f}s",
-                    "average_score": sum(r.metrics.average_score for r in run.results if r.success) / len([r for r in run.results if r.success]) if any(r.success for r in run.results) else 0,
+                    "average_score": sum(
+                        r.metrics.average_score for r in run.results if r.success
+                    ) / len([r for r in run.results if r.success]) if any(r.success for r in run.results) else 0,
                 }
 
                 yield (
                     gr.update(value=100),
-                    f"✅ 评测完成: {run.completed_count}/{run.total_annotations}",
+                    f"✅ 评测完成：{run.completed_count}/{run.total_annotations}",
                     status,
                     gr.update(visible=True),
                     gr.update(visible=False),
@@ -309,13 +351,14 @@ def create_evaluation_tab() -> gr.Tab:
                 logger.error(f"Evaluation failed: {e}")
                 yield (
                     gr.update(value=0),
-                    f"❌ 评测失败: {str(e)}",
+                    f"❌ 评测失败：{str(e)}",
                     {"status": "failed", "error": str(e)},
                     gr.update(visible=True),
                     gr.update(visible=False),
                 )
 
         async def load_recent_results():
+            """Load recent evaluation results."""
             manager = await get_result_manager()
             runs = await manager.list_runs(limit=10)
 
@@ -332,10 +375,11 @@ def create_evaluation_tab() -> gr.Tab:
             return gr.update(value=data)
 
         def cancel_evaluation():
-            # Note: Actual cancellation happens through runner.cancel()
+            """Cancel current evaluation."""
             return "正在取消..."
 
-        # Connect events
+        # ===== Connect Events =====
+        
         dual_mode.change(
             fn=toggle_dual_mode,
             inputs=[dual_mode],

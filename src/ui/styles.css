@@ -1,0 +1,172 @@
+/* ===== Extra Custom Styles for RAG Evaluation System ===== */
+
+/* Text Utilities */
+.text-muted {
+    color: #6B7280 !important;
+    font-size: 13px !important;
+}
+
+.text-primary {
+    color: #3B82F6 !important;
+}
+
+.text-success {
+    color: #10B981 !important;
+}
+
+.text-warning {
+    color: #F59E0B !important;
+}
+
+.text-error {
+    color: #EF4444 !important;
+}
+
+/* Placeholder Text */
+.placeholder-text {
+    color: #9CA3AF !important;
+    font-style: italic !important;
+    padding: 20px !important;
+    text-align: center !important;
+}
+
+/* Status Message Styling */
+.status-message {
+    padding: 12px 16px !important;
+    border-radius: 6px !important;
+    margin-top: 12px !important;
+}
+
+.status-message:contains("✅") {
+    background: #D1FAE5 !important;
+    color: #059669 !important;
+}
+
+.status-message:contains("❌") {
+    background: #FEE2E2 !important;
+    color: #DC2626 !important;
+}
+
+/* Progress Text */
+.progress-text {
+    font-size: 14px !important;
+    padding: 8px 0 !important;
+}
+
+/* Streaming Output */
+.streaming-output {
+    background: #F9FAFB !important;
+    border: 1px solid #E5E7EB !important;
+    border-radius: 8px !important;
+    padding: 16px !important;
+    margin-top: 12px !important;
+    font-family: 'Consolas', 'Monaco', monospace !important;
+    font-size: 13px !important;
+    line-height: 1.6 !important;
+}
+
+/* Export Status */
+.export-status {
+    padding: 12px 16px !important;
+    margin-left: 16px !important;
+}
+
+/* Required Field Indicator */
+.required-field label::after {
+    content: " *";
+    color: #EF4444;
+}
+
+/* Card Hover Effects */
+.gr-box {
+    transition: all 0.2s ease !important;
+}
+
+.gr-box:hover {
+    border-color: #3B82F6 !important;
+}
+
+/* Section Headers */
+.gr-box > .markdown-text h3,
+.gr-box > .markdown-text h4 {
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+}
+
+/* Button Loading State */
+button.loading {
+    opacity: 0.7 !important;
+    cursor: wait !important;
+}
+
+/* Dataframe Improvements */
+.dataframe table {
+    border-collapse: separate !important;
+    border-spacing: 0 !important;
+}
+
+.dataframe thead th {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 10 !important;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #F1F5F9;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #CBD5E1;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #94A3B8;
+}
+
+/* Focus States */
+input:focus,
+textarea:focus,
+select:focus,
+button:focus {
+    outline: 2px solid #3B82F6 !important;
+    outline-offset: 2px !important;
+}
+
+/* Animation for Status Changes */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.gr-box,
+.status-message,
+.export-status {
+    animation: fadeIn 0.3s ease;
+}
+
+/* Print Styles */
+@media print {
+    .gradio-container {
+        max-width: 100% !important;
+    }
+    
+    button,
+    .tab-nav {
+        display: none !important;
+    }
+}

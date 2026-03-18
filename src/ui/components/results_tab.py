@@ -1,5 +1,6 @@
 """
 Results display tab component for Gradio UI.
+Enhanced with modern styling and improved data visualization.
 """
 
 import asyncio
@@ -17,105 +18,166 @@ from ...core.logging import logger
 
 
 def create_results_tab() -> gr.Tab:
-    """Create the results display and analysis tab."""
+    """Create the results display and analysis tab with enhanced styling."""
 
-    with gr.Tab("结果查看") as tab:
-        gr.Markdown("### 评测结果查看与分析")
+    with gr.Tab("📈 结果查看") as tab:
+        # Header
+        gr.Markdown("""
+        ### 📊 评测结果查看与分析
+        查看评测运行结果、分析指标详情、导出数据报告
+        """)
 
         with gr.Row():
             # Left column: Run selection
             with gr.Column(scale=1):
-                gr.Markdown("#### 选择评测运行")
+                with gr.Group(elem_classes=["gr-box"]):
+                    gr.Markdown("**📋 选择评测运行**")
 
-                run_selector = gr.Dropdown(
-                    label="评测运行",
-                    choices=[],
-                    interactive=True,
-                )
-                refresh_runs_btn = gr.Button("🔄 刷新列表")
+                    run_selector = gr.Dropdown(
+                        label="评测运行列表",
+                        choices=[],
+                        interactive=True,
+                    )
+                    refresh_runs_btn = gr.Button(
+                        "🔄 刷新列表",
+                        variant="secondary",
+                    )
 
-                run_info = gr.JSON(label="运行信息")
+                    run_info = gr.JSON(
+                        label="运行信息",
+                        value={},
+                    )
 
             # Right column: Results
             with gr.Column(scale=3):
-                gr.Markdown("#### 结果概览")
+                with gr.Group(elem_classes=["gr-box"]):
+                    gr.Markdown("**📊 结果概览**")
 
-                summary_display = gr.Markdown("选择一个评测运行查看结果")
-
-                with gr.Row():
-                    interface_filter = gr.Dropdown(
-                        label="接口筛选",
-                        choices=["全部"],
-                        value="全部",
-                    )
-                    status_filter = gr.Dropdown(
-                        label="状态筛选",
-                        choices=["全部", "成功", "失败"],
-                        value="全部",
+                    summary_display = gr.Markdown(
+                        "👈 请从左侧选择一个评测运行查看结果",
+                        elem_classes=["placeholder-text"],
                     )
 
-                results_dataframe = gr.Dataframe(
-                    headers=[
-                        "ID", "查询", "成功", "平均分", "接口", "耗时(ms)"
-                    ],
-                    datatype=["str", "str", "bool", "number", "str", "number"],
-                    interactive=False,
-                    label="评测结果列表",
-                )
+                    with gr.Row():
+                        interface_filter = gr.Dropdown(
+                            label="🔌 接口筛选",
+                            choices=["全部"],
+                            value="全部",
+                            scale=1,
+                        )
+                        status_filter = gr.Dropdown(
+                            label="✅ 状态筛选",
+                            choices=["全部", "成功", "失败"],
+                            value="全部",
+                            scale=1,
+                        )
+
+                    results_dataframe = gr.Dataframe(
+                        headers=[
+                            "ID", "查询", "成功", "平均分", "接口", "耗时 (ms)"
+                        ],
+                        datatype=["str", "str", "bool", "number", "str", "number"],
+                        interactive=False,
+                        label="评测结果列表",
+                        wrap=True,
+                    )
 
         # Detail view
-        with gr.Row():
-            with gr.Column():
-                gr.Markdown("#### 单条详情")
+        with gr.Group(elem_classes=["gr-box"]):
+            gr.Markdown("**🔍 单条详情**")
 
-                detail_query = gr.Textbox(label="查询", interactive=False)
-                detail_answer = gr.Textbox(label="RAG 回答", interactive=False, lines=5)
+            with gr.Row():
+                with gr.Column(scale=2):
+                    detail_query = gr.Textbox(
+                        label="用户查询",
+                        interactive=False,
+                        placeholder="选择结果查看详情...",
+                    )
+                    detail_answer = gr.Textbox(
+                        label="RAG 回答",
+                        interactive=False,
+                        lines=5,
+                        placeholder="回答内容将显示在这里...",
+                    )
 
-                with gr.Row():
-                    detail_rag_info = gr.JSON(label="RAG 响应信息")
-                    detail_metrics = gr.JSON(label="评测指标")
+                with gr.Column(scale=1):
+                    detail_rag_info = gr.JSON(
+                        label="RAG 响应信息",
+                        value={},
+                    )
+                    detail_metrics = gr.JSON(
+                        label="评测指标",
+                        value={},
+                    )
 
-                with gr.Row():
-                    rerun_btn = gr.Button("🔄 重跑此条", variant="secondary")
-                    streaming_output = gr.Markdown("", visible=False)
+            with gr.Row():
+                rerun_btn = gr.Button(
+                    "🔄 重跑此条",
+                    variant="secondary",
+                )
+                streaming_output = gr.Markdown(
+                    "",
+                    visible=False,
+                    elem_classes=["streaming-output"],
+                )
 
         # Comparison view (for dual-RAG)
-        with gr.Row(visible=False) as comparison_row:
-            gr.Markdown("#### 双接口对比")
-            with gr.Column():
-                gr.Markdown("**接口 1 结果**")
-                compare_1 = gr.JSON()
-            with gr.Column():
-                gr.Markdown("**接口 2 结果**")
-                compare_2 = gr.JSON()
+        with gr.Group(
+            elem_classes=["gr-box"],
+            visible=False,
+        ) as comparison_row:
+            gr.Markdown("**⚖️ 双接口对比**")
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown("**🔵 接口 1 结果**")
+                    compare_1 = gr.JSON()
+                with gr.Column():
+                    gr.Markdown("**🟢 接口 2 结果**")
+                    compare_2 = gr.JSON()
 
-        # Export
-        with gr.Row():
-            export_format = gr.Dropdown(
-                label="导出格式",
-                choices=["JSON", "CSV"],
-                value="JSON",
-            )
-            export_btn = gr.Button("📥 导出当前运行结果")
-            export_status = gr.Markdown("")
+        # Export section
+        with gr.Group(elem_classes=["gr-box"]):
+            gr.Markdown("**📥 导出结果**")
+            with gr.Row():
+                export_format = gr.Dropdown(
+                    label="导出格式",
+                    choices=["JSON", "CSV"],
+                    value="JSON",
+                    scale=1,
+                )
+                export_btn = gr.Button(
+                    "📥 导出当前运行结果",
+                    variant="primary",
+                    scale=1,
+                )
+                export_status = gr.Markdown(
+                    "",
+                    elem_classes=["export-status"],
+                )
 
-        # Event handlers
+        # ===== Event Handlers =====
+        
         async def load_runs():
+            """Load available evaluation runs."""
             manager = await get_result_manager()
             runs = await manager.list_runs(limit=50)
 
             choices = [
-                (f"{r.name or r.id[:8]} - {r.status} ({r.completed_count}/{r.total_annotations})", r.id)
+                (
+                    f"{r.name or r.id[:8]} - {r.status} ({r.completed_count}/{r.total_annotations})",
+                    r.id,
+                )
                 for r in runs
             ]
 
             return gr.update(choices=choices)
 
         async def load_run_details(run_id: str):
+            """Load detailed information for a specific run."""
             if not run_id:
                 return (
                     gr.update(value={}),
-                    "选择一个评测运行查看结果",
+                    "👈 选择一个评测运行查看结果",
                     gr.update(value=[]),
                 )
 
@@ -125,7 +187,7 @@ def create_results_tab() -> gr.Tab:
             if not run:
                 return (
                     gr.update(value={}),
-                    "运行不存在",
+                    "❌ 运行不存在",
                     gr.update(value=[]),
                 )
 
@@ -140,18 +202,40 @@ def create_results_tab() -> gr.Tab:
                 "接口": run.rag_interfaces,
             }
 
-            # Summary
+            # Summary markdown with improved formatting
             summary_md = f"""
-            ### 评测概览
-            - **状态**: {run.status}
-            - **完成**: {run.completed_count}/{run.total_annotations}
-            - **失败**: {run.failed_count}
-            - **耗时**: {run.duration_seconds:.1f}s
+            ### 📊 评测概览
 
-            ### 各接口得分
+            | 指标 | 数值 |
+            |------|------|
+            | 状态 | {run.status} |
+            | 完成 | {run.completed_count}/{run.total_annotations} |
+            | 失败 | {run.failed_count} |
+            | 耗时 | {run.duration_seconds:.1f}s |
+
+            ### 🏆 各接口得分
             """
+            
             for iface, stats in run.summary_by_interface.items():
-                summary_md += f"\n- **{iface}**: 平均分 {stats['average_score']:.2%}, 成功率 {stats['success_rate']:.1%}"
+                avg_score = stats.get('average_score', 0)
+                success_rate = stats.get('success_rate', 0)
+                
+                # Color-coded score display
+                if avg_score >= 0.8:
+                    score_color = "green"
+                elif avg_score >= 0.6:
+                    score_color = "blue"
+                elif avg_score >= 0.4:
+                    score_color = "orange"
+                else:
+                    score_color = "red"
+                
+                summary_md += f"""
+
+            #### {iface}
+            - 平均分：<span style="color: {score_color}; font-weight: bold;">{avg_score:.2%}</span>
+            - 成功率：{success_rate:.1%}
+            """
 
             # Results dataframe
             results = await manager.get_results_by_run(run_id, limit=100)
@@ -173,6 +257,7 @@ def create_results_tab() -> gr.Tab:
             )
 
         async def load_result_detail(evt: gr.SelectData, run_id: str):
+            """Load detail for a selected result row."""
             if not run_id or evt.index is None:
                 return [gr.update() for _ in range(5)]
 
@@ -185,10 +270,18 @@ def create_results_tab() -> gr.Tab:
             result = results[evt.index]
 
             return (
-                gr.update(value=result.annotation.query if result.annotation else ""),
-                gr.update(value=result.rag_response.final_answer if result.rag_response else ""),
-                gr.update(value=result.rag_response.to_dict() if result.rag_response else {}),
-                gr.update(value=result.metrics.to_dict() if result.metrics else {}),
+                gr.update(
+                    value=result.annotation.query if result.annotation else ""
+                ),
+                gr.update(
+                    value=result.rag_response.final_answer if result.rag_response else ""
+                ),
+                gr.update(
+                    value=result.rag_response.to_dict() if result.rag_response else {}
+                ),
+                gr.update(
+                    value=result.metrics.to_dict() if result.metrics else {}
+                ),
                 gr.update(value=result.to_dict()),
             )
 
@@ -205,10 +298,6 @@ def create_results_tab() -> gr.Tab:
                 yield "❌ 运行不存在"
                 return
 
-            # Get the annotation
-            results = await manager.get_results_by_run(run_id)
-            # Find by index or ID
-
             yield "🔄 正在重新评测..."
 
             # Use mock adapter for demo
@@ -216,29 +305,28 @@ def create_results_tab() -> gr.Tab:
 
             # Get annotation
             handler = await get_annotation_handler()
-            # This is simplified - in real code, get the specific annotation
 
-            # Simulate streaming output
-            output = "# RAG 响应\n\n"
-            output += "## 查询改写\n正在处理...\n\n"
+            # Simulate streaming output with improved formatting
+            output = "### 🔄 RAG 响应\n\n"
+            output += "#### 🔧 查询改写\n正在处理...\n\n"
 
             yield output
             await asyncio.sleep(0.5)
 
             output += "**改写结果**: 扩展查询\n\n"
-            output += "## FAQ 匹配\n正在匹配...\n\n"
+            output += "#### 🎯 FAQ 匹配\n正在匹配...\n\n"
 
             yield output
             await asyncio.sleep(0.5)
 
             output += "**匹配结果**: 未匹配\n\n"
-            output += "## 检索结果\n正在检索...\n\n"
+            output += "#### 📚 检索结果\n正在检索...\n\n"
 
             yield output
             await asyncio.sleep(0.5)
 
             output += "**检索到 5 个文档**\n\n"
-            output += "## 生成答案\n正在生成...\n\n"
+            output += "#### ✍️ 生成答案\n正在生成...\n\n"
 
             yield output
             await asyncio.sleep(0.5)
@@ -249,6 +337,7 @@ def create_results_tab() -> gr.Tab:
             yield output
 
         async def export_results(run_id: str, format: str):
+            """Export results to file."""
             if not run_id:
                 return "❌ 请先选择一个评测运行"
 
@@ -259,13 +348,14 @@ def create_results_tab() -> gr.Tab:
                 output_path = await manager.export_run(
                     run_id,
                     format=format.lower(),
-                    output_path=Path(f"export_{run_id[:8]}.{format.lower()}")
+                    output_path=Path(f"export_{run_id[:8]}.{format.lower()}"),
                 )
-                return f"✅ 导出成功: {output_path}"
+                return f"✅ 导出成功：`{output_path}`"
             except Exception as e:
-                return f"❌ 导出失败: {str(e)}"
+                return f"❌ 导出失败：{str(e)}"
 
-        # Connect events
+        # ===== Connect Events =====
+        
         refresh_runs_btn.click(
             fn=lambda: run_async(load_runs()),
             outputs=[run_selector],
@@ -280,7 +370,13 @@ def create_results_tab() -> gr.Tab:
         results_dataframe.select(
             fn=lambda evt, rid: run_async(load_result_detail(evt, rid)),
             inputs=[run_selector],
-            outputs=[detail_query, detail_answer, detail_rag_info, detail_metrics, streaming_output],
+            outputs=[
+                detail_query,
+                detail_answer,
+                detail_rag_info,
+                detail_metrics,
+                streaming_output,
+            ],
         )
 
         rerun_btn.click(
@@ -295,7 +391,7 @@ def create_results_tab() -> gr.Tab:
             outputs=[export_status],
         )
 
-        # Initial load
+        # Initial load on tab select
         tab.select(
             fn=lambda: run_async(load_runs()),
             outputs=[run_selector],
