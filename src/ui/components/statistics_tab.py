@@ -70,8 +70,8 @@ def create_statistics_tab() -> gr.Tab:
             custom_fields_display = gr.JSON(label="自定义字段使用统计")
 
         async def load_statistics():
-            stats = await get_statistics()
-            await stats.calculate(force_refresh=True)
+            stats_calculator = await get_statistics()
+            stats = await stats_calculator.calculate(force_refresh=True)
 
             # Format basic stats
             total_md = f"""

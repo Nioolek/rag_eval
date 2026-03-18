@@ -47,11 +47,12 @@ class TestConfig:
         assert config.llm.api_key == "test-key-reload"
 
     def test_missing_api_key(self):
-        """Test error when API key is missing."""
+        """Test config loads without API key (demo mode)."""
         original_key = os.environ.pop("OPENAI_API_KEY", None)
 
-        with pytest.raises(ConfigurationError):
-            Config.from_env()
+        # Should not raise - API key is now optional for demo mode
+        config = Config.from_env()
+        assert config.llm.api_key == ""
 
         if original_key:
             os.environ["OPENAI_API_KEY"] = original_key

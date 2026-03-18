@@ -78,14 +78,10 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         """Load configuration from environment variables."""
-        # Required: OpenAI API Key
-        openai_api_key = os.getenv("OPENAI_API_KEY")
-        if not openai_api_key:
-            raise ConfigurationError(
-                "OPENAI_API_KEY environment variable is required"
-            )
+        # OpenAI API Key (optional for demo mode without LLM evaluation)
+        openai_api_key = os.getenv("OPENAI_API_KEY", "")
 
-        # Required: RAG Service URL
+        # RAG Service URL (optional - can use mock adapter for testing)
         rag_service_url = os.getenv("RAG_SERVICE_URL", "")
 
         # Storage configuration
