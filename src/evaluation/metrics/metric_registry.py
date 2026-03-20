@@ -212,4 +212,11 @@ def _register_default_metrics(registry: MetricRegistry) -> None:
     except ImportError:
         pass
 
+    # Register semantic similarity metrics
+    try:
+        from ..similarity.semantic_metrics import register_semantic_metrics
+        register_semantic_metrics()
+    except ImportError:
+        pass
+
     logger.info(f"Registered {len(registry)} default metrics")

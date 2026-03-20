@@ -32,6 +32,9 @@ class EvaluationResult(BaseModel):
     rag_response: Optional[RAGResponse] = None
     metrics: MetricSummary = Field(default_factory=MetricSummary)
 
+    # Tags for categorization and filtering
+    tags: list[str] = Field(default_factory=list)
+
     # Status
     success: bool = True
     error_message: str = ""
@@ -44,6 +47,20 @@ class EvaluationResult(BaseModel):
         """Add a metric result."""
         self.metrics.add_result(result)
 
+    def add_tag(self, tag: str) -> None:
+        """Add a tag if not already present."""
+        if tag and tag not in self.tags:
+            self.tags.append(tag)
+
+    def remove_tag(self, tag: str) -> None:
+        """Remove a tag if present."""
+        if tag in self.tags:
+            self.tags.remove(tag)
+
+    def has_tag(self, tag: str) -> bool:
+        """Check if has a specific tag."""
+        return tag in self.tags
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for storage."""
         return {
@@ -54,6 +71,7 @@ class EvaluationResult(BaseModel):
             "annotation": self.annotation.to_dict() if self.annotation else None,
             "rag_response": self.rag_response.to_dict() if self.rag_response else None,
             "metrics": self.metrics.to_dict(),
+            "tags": self.tags,
             "success": self.success,
             "error_message": self.error_message,
             "duration_ms": self.duration_ms,
@@ -71,6 +89,9 @@ class EvaluationResult(BaseModel):
             data["rag_response"] = RAGResponse.from_dict(data["rag_response"])
         if data.get("metrics"):
             data["metrics"] = MetricSummary(**data["metrics"])
+        # Ensure tags is a list
+        if "tags" not in data:
+            data["tags"] = []
         return cls(**data)
 
 
@@ -90,6 +111,9 @@ class EvaluationRun(BaseModel):
 
     # Results
     results: list[EvaluationResult] = Field(default_factory=list)
+
+    # Tags for the run
+    tags: list[str] = Field(default_factory=list)
 
     # Statistics
     total_annotations: int = 0
@@ -115,6 +139,27 @@ class EvaluationRun(BaseModel):
         if not result.success:
             self.failed_count += 1
         self._update_summary()
+
+    def add_tag(self, tag: str) -> None:
+        """Add a tag to the run if not already present."""
+        if tag and tag not in self.tags:
+            self.tags.append(tag)
+
+    def remove_tag(self, tag: str) -> None:
+        """Remove a tag from the run."""
+        if tag in self.tags:
+            self.tags.remove(tag)
+
+    def get_all_result_tags(self) -> set[str]:
+        """Get all unique tags used across all results."""
+        all_tags = set()
+        for result in self.results:
+            all_tags.update(result.tags)
+        return all_tags
+
+    def get_results_by_tag(self, tag: str) -> list[EvaluationResult]:
+        """Get all results that have a specific tag."""
+        return [r for r in self.results if tag in r.tags]
 
     def _update_summary(self) -> None:
         """Update summary statistics."""
@@ -152,6 +197,7 @@ class EvaluationRun(BaseModel):
             "selected_metrics": self.selected_metrics,
             "concurrent_workers": self.concurrent_workers,
             "results": [r.to_dict() for r in self.results],
+            "tags": self.tags,
             "total_annotations": self.total_annotations,
             "completed_count": self.completed_count,
             "failed_count": self.failed_count,
@@ -171,4 +217,7 @@ class EvaluationRun(BaseModel):
             data["finished_at"] = datetime.fromisoformat(data["finished_at"])
         if data.get("results"):
             data["results"] = [EvaluationResult.from_dict(r) for r in data["results"]]
+        # Ensure tags is a list
+        if "tags" not in data:
+            data["tags"] = []
         return cls(**data)

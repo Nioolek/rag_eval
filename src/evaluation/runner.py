@@ -26,6 +26,20 @@ from .llm_evaluator import get_llm_evaluator
 from .result_manager import ResultManager, get_result_manager
 
 
+# Global concurrency control for multi-user support
+_max_concurrent_runs = 3  # Maximum concurrent evaluation runs
+_running_count = 0
+_global_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_global_semaphore() -> asyncio.Semaphore:
+    """Get or create the global semaphore for evaluation run limiting."""
+    global _global_semaphore
+    if _global_semaphore is None:
+        _global_semaphore = asyncio.Semaphore(_max_concurrent_runs)
+    return _global_semaphore
+
+
 @dataclass
 class EvaluationProgress:
     """Progress information for running evaluation."""
@@ -111,12 +125,49 @@ class EvaluationRunner:
 
         Returns:
             EvaluationRun with results
+
+        Raises:
+            EvaluationError: If evaluation is already running or max concurrent runs reached
         """
+        global _running_count
+
         if self._running:
             raise EvaluationError("Evaluation already running")
 
-        self._running = True
-        self._cancelled = False
+        # Acquire global semaphore to limit concurrent evaluation runs
+        global_semaphore = _get_global_semaphore()
+        acquired = global_semaphore.locked() and _running_count >= _max_concurrent_runs
+
+        if acquired:
+            raise EvaluationError(
+                f"Maximum concurrent evaluation runs ({_max_concurrent_runs}) reached. "
+                "Please wait for other evaluations to complete."
+            )
+
+        # Try to acquire the global semaphore
+        async with global_semaphore:
+            _running_count += 1
+            self._running = True
+            self._cancelled = False
+
+            try:
+                return await self._run_evaluation(
+                    annotations, run_name, rag_interfaces
+                )
+            finally:
+                _running_count -= 1
+                self._running = False
+
+    async def _run_evaluation(
+        self,
+        annotations: list[Annotation],
+        run_name: str,
+        rag_interfaces: Optional[list[str]],
+    ) -> EvaluationRun:
+        """
+        Internal method to run evaluation.
+        Separated from run() to allow proper semaphore handling.
+        """
 
         rag_interfaces = rag_interfaces or list(self._rag_adapters.keys()) or ["default"]
 
@@ -193,7 +244,6 @@ class EvaluationRunner:
             raise EvaluationError(f"Evaluation run failed: {e}")
 
         finally:
-            self._running = False
             if self._process_pool:
                 self._process_pool.shutdown(wait=False)
                 self._process_pool = None

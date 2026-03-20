@@ -17,6 +17,8 @@ from .components.annotation_tab import create_annotation_tab
 from .components.statistics_tab import create_statistics_tab
 from .components.evaluation_tab import create_evaluation_tab
 from .components.results_tab import create_results_tab
+from .components.comparison_tab import create_comparison_tab
+from .components.scheduler_tab import create_scheduler_tab
 
 
 def create_app() -> gr.Blocks:
@@ -52,28 +54,36 @@ def create_app() -> gr.Blocks:
             # Tab 1: 标注管理
             with gr.TabItem("📝 标注管理", id="annotation"):
                 create_annotation_tab()
-            
+
             # Tab 2: 评测执行
             with gr.TabItem("⚡ 评测执行", id="evaluation"):
                 create_evaluation_tab()
-            
+
             # Tab 3: 结果查看
             with gr.TabItem("📈 结果查看", id="results"):
                 create_results_tab()
-            
-            # Tab 4: 标注统计
+
+            # Tab 4: 对比分析
+            with gr.TabItem("⚖️ 对比分析", id="comparison"):
+                create_comparison_tab()
+
+            # Tab 5: 标注统计
             with gr.TabItem("📊 标注统计", id="statistics"):
                 create_statistics_tab()
+
+            # Tab 6: 定时任务
+            with gr.TabItem("⏰ 定时任务", id="scheduler"):
+                create_scheduler_tab()
 
         # ===== Footer =====
         with gr.HTML(elem_classes=["app-footer"]):
             gr.HTML("""
                 <p>
-                    RAG Evaluation System v1.0.0 
+                    RAG Evaluation System v1.0.0
                     <span style="margin: 0 8px;">•</span>
-                    © 2024 
+                    © 2024
                     <span style="margin: 0 8px;">•</span>
-                    Built with 
+                    Built with
                     <a href="https://gradio.app" target="_blank">Gradio</a>
                     <span style="margin: 0 8px;">•</span>
                     <a href="https://github.com" target="_blank">GitHub</a>
@@ -86,6 +96,10 @@ def create_app() -> gr.Blocks:
             logger.info(f"Tab selected: {evt.value}")
 
         tabs.select(fn=on_tab_select)
+
+    # Enable queue for concurrent request handling
+    # max_size limits the number of requests waiting in queue
+    app.queue(max_size=20)
 
     return app
 
@@ -126,7 +140,9 @@ def run_app(
     # Run server
     host = server_name or config.ui.server_name
     port = server_port or config.ui.server_port
+    max_threads = config.ui.max_threads
     logger.info(f"🌐 Starting server on http://{host}:{port}")
+    logger.info(f"🔧 Max threads: {max_threads}")
 
     app.launch(
         server_name=host,
@@ -135,6 +151,7 @@ def run_app(
         show_error=True,
         quiet=not debug,
         favicon_path=None,  # Can add custom favicon later
+        max_threads=max_threads,
     )
 
 

@@ -11,8 +11,9 @@ import gradio as gr
 from ...models.evaluation_result import EvaluationResult, EvaluationRun
 from ...evaluation.result_manager import get_result_manager
 from ...annotation.annotation_handler import get_annotation_handler
-from ...rag.base_adapter import RAGAdapter
+from ...rag.base_adapter import RAGAdapter, StreamingChunk
 from ...rag.mock_adapter import MockRAGAdapter
+from ...rag.langgraph_adapter import LangGraphAdapter
 from ...utils.async_helpers import run_async
 from ...core.logging import logger
 
@@ -71,12 +72,18 @@ def create_results_tab() -> gr.Tab:
                             value="全部",
                             scale=1,
                         )
+                        tag_filter = gr.Dropdown(
+                            label="🏷️ 标签筛选",
+                            choices=["全部"],
+                            value="全部",
+                            scale=1,
+                        )
 
                     results_dataframe = gr.Dataframe(
                         headers=[
-                            "ID", "查询", "成功", "平均分", "接口", "耗时 (ms)"
+                            "ID", "查询", "标签", "成功", "平均分", "接口", "耗时 (ms)"
                         ],
-                        datatype=["str", "str", "bool", "number", "str", "number"],
+                        datatype=["str", "str", "str", "bool", "number", "str", "number"],
                         interactive=False,
                         label="评测结果列表",
                         wrap=True,
@@ -109,6 +116,97 @@ def create_results_tab() -> gr.Tab:
                         label="评测指标",
                         value={},
                     )
+
+        # Intermediate results display
+        with gr.Group(elem_classes=["gr-box"]):
+            gr.Markdown("**🔧 RAG 处理链路详情**")
+
+            with gr.Tabs() as intermediate_tabs:
+                # Query Rewrite Tab
+                with gr.TabItem("📝 查询改写"):
+                    query_rewrite_info = gr.Markdown(
+                        "选择结果查看查询改写详情...",
+                        elem_classes=["placeholder-text"],
+                    )
+
+                # FAQ Match Tab
+                with gr.TabItem("🎯 FAQ 匹配"):
+                    faq_match_info = gr.Markdown(
+                        "选择结果查看 FAQ 匹配详情...",
+                        elem_classes=["placeholder-text"],
+                    )
+
+                # Retrieval Tab
+                with gr.TabItem("📚 检索结果"):
+                    retrieval_table = gr.Dataframe(
+                        headers=["排名", "文档ID", "内容摘要", "得分", "来源"],
+                        datatype=["number", "str", "str", "number", "str"],
+                        interactive=False,
+                        label="检索到的文档",
+                    )
+
+                # Rerank Tab
+                with gr.TabItem("🔄 重排序"):
+                    rerank_table = gr.Dataframe(
+                        headers=["排名", "文档ID", "内容摘要", "原得分", "重排得分"],
+                        datatype=["number", "str", "str", "number", "number"],
+                        interactive=False,
+                        label="重排序后的文档",
+                    )
+
+                # Thinking Tab
+                with gr.TabItem("💭 思考过程"):
+                    thinking_info = gr.Markdown(
+                        "选择结果查看思考过程（如果启用）...",
+                        elem_classes=["placeholder-text"],
+                    )
+
+        # Tag management section
+        with gr.Group(elem_classes=["gr-box"]):
+            gr.Markdown("**🏷️ 标签管理**")
+
+            with gr.Row():
+                with gr.Column(scale=2):
+                    current_tags = gr.Markdown(
+                        "**当前标签**: 无",
+                        elem_classes=["tag-display"],
+                    )
+
+                with gr.Column(scale=2):
+                    with gr.Row():
+                        preset_tags = gr.Dropdown(
+                            label="快速添加预设标签",
+                            choices=[
+                                "✅ 优秀案例",
+                                "⚠️ 需复审",
+                                "❌ 典型错误",
+                                "🔍 难度较高",
+                                "💡 答案质量好",
+                                "📊 数据问题",
+                                "🤖 RAG 问题",
+                            ],
+                            value=None,
+                            interactive=True,
+                        )
+
+            with gr.Row():
+                new_tag_input = gr.Textbox(
+                    label="自定义标签",
+                    placeholder="输入新标签...",
+                    scale=2,
+                )
+                add_tag_btn = gr.Button(
+                    "➕ 添加标签",
+                    variant="primary",
+                    scale=1,
+                )
+                remove_tag_btn = gr.Button(
+                    "➖ 移除标签",
+                    variant="secondary",
+                    scale=1,
+                )
+
+            tag_status = gr.Markdown("")
 
             with gr.Row():
                 rerun_btn = gr.Button(
@@ -179,6 +277,7 @@ def create_results_tab() -> gr.Tab:
                     gr.update(value={}),
                     "👈 选择一个评测运行查看结果",
                     gr.update(value=[]),
+                    gr.update(choices=["全部"], value="全部"),
                 )
 
             manager = await get_result_manager()
@@ -189,6 +288,7 @@ def create_results_tab() -> gr.Tab:
                     gr.update(value={}),
                     "❌ 运行不存在",
                     gr.update(value=[]),
+                    gr.update(choices=["全部"], value="全部"),
                 )
 
             # Run info
@@ -200,6 +300,7 @@ def create_results_tab() -> gr.Tab:
                 "失败": run.failed_count,
                 "耗时": f"{run.duration_seconds:.1f}s",
                 "接口": run.rag_interfaces,
+                "运行标签": run.tags if run.tags else [],
             }
 
             # Summary markdown with improved formatting
@@ -215,11 +316,11 @@ def create_results_tab() -> gr.Tab:
 
             ### 🏆 各接口得分
             """
-            
+
             for iface, stats in run.summary_by_interface.items():
                 avg_score = stats.get('average_score', 0)
                 success_rate = stats.get('success_rate', 0)
-                
+
                 # Color-coded score display
                 if avg_score >= 0.8:
                     score_color = "green"
@@ -229,7 +330,7 @@ def create_results_tab() -> gr.Tab:
                     score_color = "orange"
                 else:
                     score_color = "red"
-                
+
                 summary_md += f"""
 
             #### {iface}
@@ -237,13 +338,19 @@ def create_results_tab() -> gr.Tab:
             - 成功率：{success_rate:.1%}
             """
 
+            # Get all tags used in the run
+            all_tags = await manager.get_all_tags(run_id)
+            tag_choices = ["全部"] + [t["name"] for t in all_tags.get("result_tags", [])]
+
             # Results dataframe
             results = await manager.get_results_by_run(run_id, limit=100)
             data = []
             for r in results:
+                tags_str = ", ".join(r.tags) if r.tags else "-"
                 data.append([
                     r.id[:8] + "...",
                     r.annotation.query[:30] + "..." if r.annotation else "N/A",
+                    tags_str,
                     r.success,
                     round(r.metrics.average_score, 3) if r.metrics else 0,
                     r.rag_interface,
@@ -254,20 +361,109 @@ def create_results_tab() -> gr.Tab:
                 gr.update(value=run_info_data),
                 summary_md,
                 gr.update(value=data),
+                gr.update(choices=tag_choices, value="全部"),
             )
 
         async def load_result_detail(evt: gr.SelectData, run_id: str):
             """Load detail for a selected result row."""
             if not run_id or evt.index is None:
-                return [gr.update() for _ in range(5)]
+                return [gr.update() for _ in range(15)]
 
             manager = await get_result_manager()
             results = await manager.get_results_by_run(run_id, limit=100)
 
             if evt.index >= len(results):
-                return [gr.update() for _ in range(5)]
+                return [gr.update() for _ in range(15)]
 
             result = results[evt.index]
+
+            # Build query rewrite info
+            qr_md = "### 📝 查询改写\n\n"
+            if result.rag_response and result.rag_response.query_rewrite:
+                qr = result.rag_response.query_rewrite
+                qr_md += f"""**原查询**: {qr.original_query}
+
+**改写后**: {qr.rewritten_query}
+
+**改写类型**: {qr.rewrite_type or "未指定"}
+
+**置信度**: {qr.confidence:.2%}
+"""
+            else:
+                qr_md += "*未进行查询改写*"
+
+            # Build FAQ match info
+            faq_md = "### 🎯 FAQ 匹配\n\n"
+            if result.rag_response and result.rag_response.faq_match:
+                fm = result.rag_response.faq_match
+                if fm.matched:
+                    faq_md += f"""✅ **匹配成功**
+
+**FAQ ID**: {fm.faq_id}
+
+**问题**: {fm.faq_question}
+
+**答案**: {fm.faq_answer}
+
+**置信度**: {fm.confidence:.2%}
+
+**相似度**: {fm.similarity_score:.2%}
+"""
+                else:
+                    faq_md += "❌ **未匹配到 FAQ**"
+            else:
+                faq_md += "*未进行 FAQ 匹配*"
+
+            # Build retrieval table
+            retrieval_data = []
+            if result.rag_response and result.rag_response.retrieval_results:
+                for r in result.rag_response.retrieval_results:
+                    retrieval_data.append([
+                        r.rank,
+                        r.document_id,
+                        r.content[:100] + "..." if len(r.content) > 100 else r.content,
+                        round(r.score, 4),
+                        r.metadata.get("source", "未知"),
+                    ])
+
+            # Build rerank table
+            rerank_data = []
+            if result.rag_response and result.rag_response.rerank_results:
+                for r in result.rag_response.rerank_results:
+                    rerank_data.append([
+                        r.rank,
+                        r.document_id,
+                        r.content[:100] + "..." if len(r.content) > 100 else r.content,
+                        round(r.original_score, 4),
+                        round(r.rerank_score, 4),
+                    ])
+
+            # Build thinking info
+            thinking_md = "### 💭 思考过程\n\n"
+            if result.rag_response and result.rag_response.llm_output:
+                llm = result.rag_response.llm_output
+                if llm.thinking_process:
+                    thinking_md += f"""```
+{llm.thinking_process}
+```
+
+**模型**: {llm.model}
+
+**Token 使用**:
+- Prompt: {llm.token_usage.get('prompt_tokens', 'N/A')}
+- Completion: {llm.token_usage.get('completion_tokens', 'N/A')}
+- Total: {llm.token_usage.get('total_tokens', 'N/A')}
+"""
+                else:
+                    thinking_md += "*未启用思考模式或无思考过程*"
+            else:
+                thinking_md += "*无 LLM 输出信息*"
+
+            # Build current tags display
+            if result.tags:
+                tags_display = "**当前标签**: " + " | ".join([f"`{t}`" for t in result.tags])
+            else:
+                tags_display = "**当前标签**: 无"
 
             return (
                 gr.update(
@@ -283,6 +479,14 @@ def create_results_tab() -> gr.Tab:
                     value=result.metrics.to_dict() if result.metrics else {}
                 ),
                 gr.update(value=result.to_dict()),
+                # Intermediate results
+                gr.update(value=qr_md),
+                gr.update(value=faq_md),
+                gr.update(value=retrieval_data),
+                gr.update(value=rerank_data),
+                gr.update(value=thinking_md),
+                # Tags
+                gr.update(value=tags_display),
             )
 
         async def rerun_single(run_id: str, result_id: str):
@@ -298,43 +502,96 @@ def create_results_tab() -> gr.Tab:
                 yield "❌ 运行不存在"
                 return
 
-            yield "🔄 正在重新评测..."
-
-            # Use mock adapter for demo
-            adapter = MockRAGAdapter()
+            yield "🔄 正在连接 RAG 服务..."
 
             # Get annotation
             handler = await get_annotation_handler()
 
-            # Simulate streaming output with improved formatting
-            output = "### 🔄 RAG 响应\n\n"
-            output += "#### 🔧 查询改写\n正在处理...\n\n"
+            # Use mock adapter for demo (in production, use real LangGraph adapter)
+            adapter = MockRAGAdapter(simulate_latency=True)
 
+            # Get a sample query (in real usage, get from selected result)
+            results = await manager.get_results_by_run(run_id, limit=1)
+            if results and results[0].annotation:
+                query = results[0].annotation.query
+            else:
+                query = "测试查询"
+
+            # Stream the query execution
+            output = "### 🔄 RAG 流式响应\n\n"
             yield output
-            await asyncio.sleep(0.5)
 
-            output += "**改写结果**: 扩展查询\n\n"
-            output += "#### 🎯 FAQ 匹配\n正在匹配...\n\n"
+            current_stage = None
+            stage_content = {}
 
-            yield output
-            await asyncio.sleep(0.5)
+            async for chunk in adapter.stream_query(query=query, enable_thinking=True):
+                stage = chunk.stage
+                content = chunk.content
+                is_final = chunk.is_final
+                metadata = chunk.metadata or {}
 
-            output += "**匹配结果**: 未匹配\n\n"
-            output += "#### 📚 检索结果\n正在检索...\n\n"
+                # Track stage content
+                if stage != current_stage:
+                    if current_stage:
+                        output += "\n\n"
+                    current_stage = stage
 
-            yield output
-            await asyncio.sleep(0.5)
+                # Format based on stage
+                if stage == "query_rewrite":
+                    if "query_rewrite" not in stage_content:
+                        output += "#### 🔧 查询改写\n"
+                        stage_content["query_rewrite"] = True
+                    output += f"{content}\n"
 
-            output += "**检索到 5 个文档**\n\n"
-            output += "#### ✍️ 生成答案\n正在生成...\n\n"
+                elif stage == "faq_match":
+                    if "faq_match" not in stage_content:
+                        output += "\n#### 🎯 FAQ 匹配\n"
+                        stage_content["faq_match"] = True
+                    output += f"{content}\n"
 
-            yield output
-            await asyncio.sleep(0.5)
+                elif stage == "retrieval":
+                    if "retrieval" not in stage_content:
+                        output += "\n#### 📚 检索结果\n"
+                        stage_content["retrieval"] = True
+                    output += f"{content}\n"
 
-            output += "**答案**: 这是一个模拟的 RAG 响应。\n\n"
-            output += "---\n✅ 评测完成"
+                elif stage == "rerank":
+                    if "rerank" not in stage_content:
+                        output += "\n#### 🔄 重排序\n"
+                        stage_content["rerank"] = True
+                    output += f"{content}\n"
 
-            yield output
+                elif stage == "thinking":
+                    if "thinking" not in stage_content:
+                        output += "\n#### 💭 思考过程\n"
+                        stage_content["thinking"] = True
+                    output += f"```\n{content}\n```\n"
+
+                elif stage == "generation":
+                    if "generation" not in stage_content:
+                        output += "\n#### ✍️ 生成答案\n"
+                        stage_content["generation"] = True
+                    # Show streaming content with cursor effect
+                    output += f"\r{content}"
+
+                elif stage == "final":
+                    output += "\n\n---\n"
+                    output += f"#### ✅ 最终答案\n\n{content}\n\n"
+
+                    # Show metadata
+                    latency = metadata.get("latency_ms", 0)
+                    output += f"**耗时**: {latency:.0f}ms\n"
+
+                    if metadata.get("is_refused"):
+                        output += "\n⚠️ 系统拒绝了此查询\n"
+
+                    output += "\n✅ 评测完成"
+
+                elif stage == "error":
+                    output += f"\n\n❌ **错误**: {content}\n"
+
+                yield output
+                await asyncio.sleep(0.01)  # Small delay for UI update
 
         async def export_results(run_id: str, format: str):
             """Export results to file."""
@@ -354,8 +611,118 @@ def create_results_tab() -> gr.Tab:
             except Exception as e:
                 return f"❌ 导出失败：{str(e)}"
 
+        # State for selected result
+        selected_result_id = gr.State(None)
+        selected_result_index = gr.State(None)
+
+        async def on_result_select(evt: gr.SelectData):
+            """Store selected result index and ID."""
+            return evt.index, None  # Will be resolved later with result ID
+
+        async def add_tag_to_result(
+            run_id: str,
+            result_index: int,
+            tag: str,
+            preset_tag: Optional[str],
+        ):
+            """Add a tag to the selected result."""
+            if not run_id or result_index is None:
+                return "❌ 请先选择一条结果", gr.update()
+
+            # Use preset tag if no custom tag provided
+            tag_to_add = tag or preset_tag
+            if not tag_to_add:
+                return "❌ 请输入或选择一个标签", gr.update()
+
+            manager = await get_result_manager()
+            results = await manager.get_results_by_run(run_id, limit=100)
+
+            if result_index >= len(results):
+                return "❌ 结果不存在", gr.update()
+
+            result = results[result_index]
+            success = await manager.add_result_tag(run_id, result.id, tag_to_add)
+
+            if success:
+                # Refresh result detail
+                result = results[result_index]  # Get updated result
+                if result.tags:
+                    tags_display = "**当前标签**: " + " | ".join([f"`{t}`" for t in result.tags])
+                else:
+                    tags_display = "**当前标签**: 无"
+                return f"✅ 已添加标签: {tag_to_add}", gr.update(value=tags_display)
+            else:
+                return "❌ 添加失败", gr.update()
+
+        async def remove_tag_from_result(
+            run_id: str,
+            result_index: int,
+            tag: str,
+            preset_tag: Optional[str],
+        ):
+            """Remove a tag from the selected result."""
+            if not run_id or result_index is None:
+                return "❌ 请先选择一条结果", gr.update()
+
+            # Use preset tag if no custom tag provided
+            tag_to_remove = tag or preset_tag
+            if not tag_to_remove:
+                return "❌ 请输入或选择要移除的标签", gr.update()
+
+            manager = await get_result_manager()
+            results = await manager.get_results_by_run(run_id, limit=100)
+
+            if result_index >= len(results):
+                return "❌ 结果不存在", gr.update()
+
+            result = results[result_index]
+            success = await manager.remove_result_tag(run_id, result.id, tag_to_remove)
+
+            if success:
+                # Get updated result from run
+                run = await manager.get_run(run_id)
+                for r in run.results:
+                    if r.id == result.id:
+                        result = r
+                        break
+                if result.tags:
+                    tags_display = "**当前标签**: " + " | ".join([f"`{t}`" for t in result.tags])
+                else:
+                    tags_display = "**当前标签**: 无"
+                return f"✅ 已移除标签: {tag_to_remove}", gr.update(value=tags_display)
+            else:
+                return "❌ 移除失败或标签不存在", gr.update()
+
+        async def filter_by_tag(run_id: str, tag: str):
+            """Filter results by tag."""
+            if not run_id:
+                return gr.update()
+
+            manager = await get_result_manager()
+            results = await manager.get_results_by_run(run_id, limit=100)
+
+            data = []
+            for r in results:
+                # Filter by tag if specified
+                if tag and tag != "全部":
+                    if tag not in r.tags:
+                        continue
+
+                tags_str = ", ".join(r.tags) if r.tags else "-"
+                data.append([
+                    r.id[:8] + "...",
+                    r.annotation.query[:30] + "..." if r.annotation else "N/A",
+                    tags_str,
+                    r.success,
+                    round(r.metrics.average_score, 3) if r.metrics else 0,
+                    r.rag_interface,
+                    round(r.duration_ms, 0),
+                ])
+
+            return gr.update(value=data)
+
         # ===== Connect Events =====
-        
+
         refresh_runs_btn.click(
             fn=lambda: run_async(load_runs()),
             outputs=[run_selector],
@@ -364,7 +731,13 @@ def create_results_tab() -> gr.Tab:
         run_selector.change(
             fn=lambda rid: run_async(load_run_details(rid)),
             inputs=[run_selector],
-            outputs=[run_info, summary_display, results_dataframe],
+            outputs=[run_info, summary_display, results_dataframe, tag_filter],
+        )
+
+        # Result selection
+        results_dataframe.select(
+            fn=lambda evt: (evt.index, evt.index),
+            outputs=[selected_result_index, selected_result_id],
         )
 
         results_dataframe.select(
@@ -376,7 +749,45 @@ def create_results_tab() -> gr.Tab:
                 detail_rag_info,
                 detail_metrics,
                 streaming_output,
+                # Intermediate results
+                query_rewrite_info,
+                faq_match_info,
+                retrieval_table,
+                rerank_table,
+                thinking_info,
+                # Tags
+                current_tags,
             ],
+        )
+
+        # Tag filter
+        tag_filter.change(
+            fn=lambda rid, tag: run_async(filter_by_tag(rid, tag)),
+            inputs=[run_selector, tag_filter],
+            outputs=[results_dataframe],
+        )
+
+        # Tag management
+        add_tag_btn.click(
+            fn=lambda rid, idx, tag, preset: run_async(
+                add_tag_to_result(rid, idx, tag, preset)
+            ),
+            inputs=[run_selector, selected_result_index, new_tag_input, preset_tags],
+            outputs=[tag_status, current_tags],
+        )
+
+        remove_tag_btn.click(
+            fn=lambda rid, idx, tag, preset: run_async(
+                remove_tag_from_result(rid, idx, tag, preset)
+            ),
+            inputs=[run_selector, selected_result_index, new_tag_input, preset_tags],
+            outputs=[tag_status, current_tags],
+        )
+
+        # Clear preset after selection
+        preset_tags.change(
+            fn=lambda: gr.update(value=""),
+            outputs=[new_tag_input],
         )
 
         rerun_btn.click(

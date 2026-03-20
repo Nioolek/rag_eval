@@ -216,6 +216,198 @@ class ResultManager:
             "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         }
 
+    # ===== Tag Management =====
+
+    async def add_result_tag(
+        self,
+        run_id: str,
+        result_id: str,
+        tag: str,
+    ) -> bool:
+        """
+        Add a tag to a specific result.
+
+        Args:
+            run_id: Run ID
+            result_id: Result ID
+            tag: Tag to add
+
+        Returns:
+            True if successful
+        """
+        run = await self.get_run(run_id)
+        if not run:
+            return False
+
+        for result in run.results:
+            if result.id == result_id:
+                result.add_tag(tag)
+                break
+        else:
+            return False
+
+        # Save updated run
+        await self.storage.save(self.RUNS_COLLECTION, run.to_dict())
+        logger.debug(f"Added tag '{tag}' to result {result_id}")
+        return True
+
+    async def remove_result_tag(
+        self,
+        run_id: str,
+        result_id: str,
+        tag: str,
+    ) -> bool:
+        """
+        Remove a tag from a specific result.
+
+        Args:
+            run_id: Run ID
+            result_id: Result ID
+            tag: Tag to remove
+
+        Returns:
+            True if successful
+        """
+        run = await self.get_run(run_id)
+        if not run:
+            return False
+
+        for result in run.results:
+            if result.id == result_id:
+                result.remove_tag(tag)
+                break
+        else:
+            return False
+
+        # Save updated run
+        await self.storage.save(self.RUNS_COLLECTION, run.to_dict())
+        logger.debug(f"Removed tag '{tag}' from result {result_id}")
+        return True
+
+    async def add_run_tag(self, run_id: str, tag: str) -> bool:
+        """
+        Add a tag to an evaluation run.
+
+        Args:
+            run_id: Run ID
+            tag: Tag to add
+
+        Returns:
+            True if successful
+        """
+        run = await self.get_run(run_id)
+        if not run:
+            return False
+
+        run.add_tag(tag)
+        await self.storage.save(self.RUNS_COLLECTION, run.to_dict())
+        logger.debug(f"Added tag '{tag}' to run {run_id}")
+        return True
+
+    async def remove_run_tag(self, run_id: str, tag: str) -> bool:
+        """
+        Remove a tag from an evaluation run.
+
+        Args:
+            run_id: Run ID
+            tag: Tag to remove
+
+        Returns:
+            True if successful
+        """
+        run = await self.get_run(run_id)
+        if not run:
+            return False
+
+        run.remove_tag(tag)
+        await self.storage.save(self.RUNS_COLLECTION, run.to_dict())
+        logger.debug(f"Removed tag '{tag}' from run {run_id}")
+        return True
+
+    async def get_results_by_tag(
+        self,
+        run_id: str,
+        tag: str,
+    ) -> list[EvaluationResult]:
+        """
+        Get all results with a specific tag.
+
+        Args:
+            run_id: Run ID
+            tag: Tag to filter by
+
+        Returns:
+            List of EvaluationResult with the tag
+        """
+        run = await self.get_run(run_id)
+        if not run:
+            return []
+
+        return run.get_results_by_tag(tag)
+
+    async def get_all_tags(self, run_id: str) -> dict[str, Any]:
+        """
+        Get all tags used in a run.
+
+        Args:
+            run_id: Run ID
+
+        Returns:
+            Dictionary with run_tags and result_tags
+        """
+        run = await self.get_run(run_id)
+        if not run:
+            return {"run_tags": [], "result_tags": []}
+
+        # Get tags from all results with counts
+        tag_counts: dict[str, int] = {}
+        for result in run.results:
+            for tag in result.tags:
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+        return {
+            "run_tags": run.tags,
+            "result_tags": [
+                {"name": tag, "count": count}
+                for tag, count in sorted(tag_counts.items(), key=lambda x: -x[1])
+            ],
+        }
+
+    async def batch_add_tag(
+        self,
+        run_id: str,
+        result_ids: list[str],
+        tag: str,
+    ) -> int:
+        """
+        Add a tag to multiple results at once.
+
+        Args:
+            run_id: Run ID
+            result_ids: List of result IDs
+            tag: Tag to add
+
+        Returns:
+            Number of results updated
+        """
+        run = await self.get_run(run_id)
+        if not run:
+            return 0
+
+        result_id_set = set(result_ids)
+        updated = 0
+
+        for result in run.results:
+            if result.id in result_id_set:
+                result.add_tag(tag)
+                updated += 1
+
+        if updated > 0:
+            await self.storage.save(self.RUNS_COLLECTION, run.to_dict())
+            logger.debug(f"Batch added tag '{tag}' to {updated} results")
+
+        return updated
+
 
 # Singleton instance
 _manager_instance: Optional[ResultManager] = None

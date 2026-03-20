@@ -4,14 +4,14 @@ LangGraph RemoteGraph adapter for RAG services.
 
 import asyncio
 import time
-from typing import Any, Optional
+from typing import Any, Optional, AsyncGenerator
 
 from ..models.rag_response import RAGResponse, RAGResponseAdapter
 from ..models.annotation import Annotation
 from ..core.exceptions import RAGConnectionError
 from ..core.logging import logger
 
-from .base_adapter import RAGAdapter, RAGAdapterConfig
+from .base_adapter import RAGAdapter, RAGAdapterConfig, StreamingChunk
 
 
 class LangGraphAdapter(RAGAdapter):
@@ -210,3 +210,321 @@ class LangGraphAdapter(RAGAdapter):
         """Close adapter and release resources."""
         self._client = None
         self._initialized = False
+
+    async def stream_query(
+        self,
+        query: str,
+        conversation_history: Optional[list[str]] = None,
+        agent_id: Optional[str] = None,
+        enable_thinking: bool = False,
+        **kwargs: Any,
+    ) -> AsyncGenerator[StreamingChunk, None]:
+        """
+        Stream query execution with intermediate results.
+
+        Yields StreamingChunk objects for each stage:
+        - query_rewrite: Query rewriting results
+        - faq_match: FAQ matching results
+        - retrieval: Document retrieval results
+        - rerank: Reranking results
+        - generation: LLM generation (with thinking if enabled)
+        - final: Final response
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        start_time = time.time()
+
+        try:
+            # Try streaming via LangGraph client
+            if self._client:
+                async for chunk in self._stream_via_langgraph(
+                    query=query,
+                    conversation_history=conversation_history or [],
+                    agent_id=agent_id or "default",
+                    enable_thinking=enable_thinking,
+                    **kwargs,
+                ):
+                    yield chunk
+            else:
+                # Fallback to HTTP streaming
+                async for chunk in self._stream_via_http(
+                    query=query,
+                    conversation_history=conversation_history or [],
+                    agent_id=agent_id or "default",
+                    enable_thinking=enable_thinking,
+                    **kwargs,
+                ):
+                    yield chunk
+
+        except Exception as e:
+            logger.error(f"Streaming query failed: {e}")
+            yield StreamingChunk(
+                stage="error",
+                content=str(e),
+                is_final=True,
+                metadata={"success": False, "error": str(e)}
+            )
+
+    async def _stream_via_langgraph(
+        self,
+        query: str,
+        conversation_history: list[str],
+        agent_id: str,
+        enable_thinking: bool,
+        **kwargs: Any,
+    ) -> AsyncGenerator[StreamingChunk, None]:
+        """Stream via LangGraph client with streaming support."""
+        input_data = {
+            "query": query,
+            "conversation_history": conversation_history,
+            "agent_id": agent_id,
+            "enable_thinking": enable_thinking,
+            **kwargs,
+        }
+
+        # Check if client supports streaming
+        if hasattr(self._client, 'astream'):
+            try:
+                async for event in self._client.astream(input_data):
+                    # Parse streaming events
+                    chunk = self._parse_stream_event(event)
+                    if chunk:
+                        yield chunk
+                return
+            except Exception as e:
+                logger.warning(f"LangGraph streaming failed, falling back: {e}")
+
+        # Fallback: run query and yield stages
+        response = await self._query_internal(
+            query=query,
+            conversation_history=conversation_history,
+            agent_id=agent_id,
+            enable_thinking=enable_thinking,
+            **kwargs,
+        )
+
+        async for chunk in self._yield_response_chunks(response):
+            yield chunk
+
+    async def _stream_via_http(
+        self,
+        query: str,
+        conversation_history: list[str],
+        agent_id: str,
+        enable_thinking: bool,
+        **kwargs: Any,
+    ) -> AsyncGenerator[StreamingChunk, None]:
+        """Stream via HTTP SSE endpoint."""
+        import aiohttp
+
+        url = f"{self.config.service_url}/stream"
+        payload = {
+            "query": query,
+            "conversation_history": conversation_history,
+            "agent_id": agent_id,
+            "enable_thinking": enable_thinking,
+            **kwargs,
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+                ) as response:
+                    if response.status != 200:
+                        raise RAGConnectionError(
+                            f"RAG streaming returned status {response.status}"
+                        )
+
+                    # Parse SSE stream
+                    async for line in response.content:
+                        line = line.decode('utf-8').strip()
+                        if line.startswith('data: '):
+                            import json
+                            data = json.loads(line[6:])
+                            chunk = self._parse_sse_data(data)
+                            if chunk:
+                                yield chunk
+
+        except aiohttp.ClientError as e:
+            # Fallback to non-streaming
+            logger.warning(f"HTTP streaming failed, falling back: {e}")
+            response = await self._query_via_http(
+                query=query,
+                conversation_history=conversation_history,
+                agent_id=agent_id,
+                enable_thinking=enable_thinking,
+                **kwargs,
+            )
+            async for chunk in self._yield_response_chunks(response):
+                yield chunk
+
+    def _parse_stream_event(self, event: dict[str, Any]) -> Optional[StreamingChunk]:
+        """Parse a LangGraph streaming event."""
+        if not event:
+            return None
+
+        # Handle different event types
+        event_type = event.get("event", "")
+        data = event.get("data", {})
+
+        if event_type == "on_chain_start":
+            return StreamingChunk(
+                stage="start",
+                content=f"开始处理: {data.get('name', 'unknown')}",
+                metadata={"event": event_type}
+            )
+
+        elif event_type == "on_chain_end":
+            name = data.get("name", "")
+            output = data.get("output", {})
+
+            # Determine stage based on chain name
+            if "query" in name.lower() and "rewrite" in name.lower():
+                return StreamingChunk(
+                    stage="query_rewrite",
+                    content=output.get("rewritten_query", ""),
+                    metadata={"original": output.get("original_query", "")}
+                )
+            elif "faq" in name.lower():
+                return StreamingChunk(
+                    stage="faq_match",
+                    content=output.get("faq_answer", ""),
+                    metadata={"matched": output.get("matched", False)}
+                )
+            elif "retriev" in name.lower():
+                docs = output.get("documents", [])
+                return StreamingChunk(
+                    stage="retrieval",
+                    content=f"检索到 {len(docs)} 个文档",
+                    metadata={"count": len(docs), "documents": docs[:3]}
+                )
+            elif "rerank" in name.lower():
+                docs = output.get("documents", [])
+                return StreamingChunk(
+                    stage="rerank",
+                    content=f"重排序 {len(docs)} 个文档",
+                    metadata={"count": len(docs)}
+                )
+            elif "llm" in name.lower() or "generat" in name.lower():
+                return StreamingChunk(
+                    stage="generation",
+                    content=output.get("content", ""),
+                    metadata={"tokens": output.get("token_usage", {})}
+                )
+
+        elif event_type == "on_llm_stream":
+            # Token-by-token generation
+            token = data.get("chunk", {}).get("text", "")
+            if token:
+                return StreamingChunk(
+                    stage="generation",
+                    content=token,
+                    metadata={"streaming": True}
+                )
+
+        elif event_type == "on_chain_stream":
+            # Intermediate chain output
+            return StreamingChunk(
+                stage="processing",
+                content=str(data.get("chunk", "")),
+                metadata={"event": event_type}
+            )
+
+        return None
+
+    def _parse_sse_data(self, data: dict[str, Any]) -> Optional[StreamingChunk]:
+        """Parse SSE data from HTTP streaming."""
+        stage = data.get("stage", "unknown")
+        content = data.get("content", "")
+        is_final = data.get("is_final", False)
+
+        return StreamingChunk(
+            stage=stage,
+            content=content,
+            is_final=is_final,
+            metadata=data.get("metadata", {})
+        )
+
+    async def _yield_response_chunks(
+        self,
+        response: RAGResponse
+    ) -> AsyncGenerator[StreamingChunk, None]:
+        """Yield chunks from a complete RAGResponse."""
+        import asyncio
+
+        # Query rewrite stage
+        if response.query_rewrite:
+            yield StreamingChunk(
+                stage="query_rewrite",
+                content=f"原查询: {response.query_rewrite.original_query}\n改写后: {response.query_rewrite.rewritten_query}",
+                metadata={
+                    "rewrite_type": response.query_rewrite.rewrite_type,
+                    "confidence": response.query_rewrite.confidence
+                }
+            )
+            await asyncio.sleep(0.1)
+
+        # FAQ match stage
+        if response.faq_match:
+            yield StreamingChunk(
+                stage="faq_match",
+                content=response.faq_match.faq_answer if response.faq_match.matched else "未匹配到FAQ",
+                metadata={
+                    "matched": response.faq_match.matched,
+                    "confidence": response.faq_match.confidence,
+                    "similarity": response.faq_match.similarity_score
+                }
+            )
+            await asyncio.sleep(0.1)
+
+        # Retrieval stage
+        if response.retrieval_results:
+            docs_info = "\n".join([
+                f"{i+1}. {doc.content[:100]}... (得分: {doc.score:.3f})"
+                for i, doc in enumerate(response.retrieval_results[:5])
+            ])
+            yield StreamingChunk(
+                stage="retrieval",
+                content=f"检索到 {len(response.retrieval_results)} 个文档:\n{docs_info}",
+                metadata={"count": len(response.retrieval_results)}
+            )
+            await asyncio.sleep(0.1)
+
+        # Rerank stage
+        if response.rerank_results:
+            rerank_info = "\n".join([
+                f"{i+1}. {doc.content[:100]}... (重排得分: {doc.rerank_score:.3f})"
+                for i, doc in enumerate(response.rerank_results[:5])
+            ])
+            yield StreamingChunk(
+                stage="rerank",
+                content=f"重排序后 {len(response.rerank_results)} 个文档:\n{rerank_info}",
+                metadata={"count": len(response.rerank_results)}
+            )
+            await asyncio.sleep(0.1)
+
+        # Generation stage (with thinking if available)
+        if response.llm_output:
+            if response.llm_output.thinking_process:
+                yield StreamingChunk(
+                    stage="thinking",
+                    content=response.llm_output.thinking_process,
+                    metadata={"tokens": response.llm_output.token_usage}
+                )
+                await asyncio.sleep(0.1)
+
+        # Final answer
+        yield StreamingChunk(
+            stage="final",
+            content=response.final_answer,
+            is_final=True,
+            metadata={
+                "success": response.success,
+                "latency_ms": response.latency_ms,
+                "is_refused": response.is_refused
+            }
+        )

@@ -5,7 +5,7 @@ Mock RAG adapter for testing and development.
 import asyncio
 import random
 import time
-from typing import Any, Optional
+from typing import Any, Optional, AsyncGenerator
 
 from ..models.rag_response import (
     RAGResponse,
@@ -18,7 +18,7 @@ from ..models.rag_response import (
 from ..models.annotation import Annotation
 from ..core.logging import logger
 
-from .base_adapter import RAGAdapter
+from .base_adapter import RAGAdapter, StreamingChunk
 
 
 class MockRAGAdapter(RAGAdapter):
@@ -176,3 +176,115 @@ class MockRAGAdapter(RAGAdapter):
     async def close(self) -> None:
         """No resources to close."""
         pass
+
+    async def stream_query(
+        self,
+        query: str,
+        conversation_history: Optional[list[str]] = None,
+        agent_id: Optional[str] = None,
+        enable_thinking: bool = False,
+        **kwargs: Any,
+    ) -> AsyncGenerator[StreamingChunk, None]:
+        """
+        Stream mock query execution with simulated intermediate results.
+        Provides realistic streaming demo for UI development.
+        """
+        start_time = time.time()
+
+        # Simulate query rewrite stage
+        await asyncio.sleep(random.uniform(0.1, 0.3))
+        if len(query) > 20:
+            yield StreamingChunk(
+                stage="query_rewrite",
+                content=f"**原查询**: {query}\n\n**改写后**: Expanded: {query}",
+                metadata={
+                    "rewrite_type": "expansion",
+                    "confidence": 0.9
+                }
+            )
+
+        # Simulate FAQ match stage
+        await asyncio.sleep(random.uniform(0.1, 0.3))
+        if random.random() < 0.3:
+            yield StreamingChunk(
+                stage="faq_match",
+                content=f"✅ 匹配到 FAQ: 这是一个关于 '{query}' 的常见问题答案。",
+                metadata={
+                    "matched": True,
+                    "confidence": random.uniform(0.8, 0.99),
+                }
+            )
+        else:
+            yield StreamingChunk(
+                stage="faq_match",
+                content="❌ 未匹配到 FAQ",
+                metadata={"matched": False}
+            )
+
+        # Simulate retrieval stage
+        await asyncio.sleep(random.uniform(0.2, 0.5))
+        doc_count = random.randint(3, 8)
+        docs_preview = "\n".join([
+            f"  {i+1}. 文档片段 {i+1} (相关度: {random.uniform(0.5, 0.95):.2f})"
+            for i in range(min(doc_count, 5))
+        ])
+        yield StreamingChunk(
+            stage="retrieval",
+            content=f"📚 检索到 {doc_count} 个文档:\n{docs_preview}",
+            metadata={"count": doc_count}
+        )
+
+        # Simulate rerank stage
+        await asyncio.sleep(random.uniform(0.1, 0.3))
+        rerank_count = min(doc_count, 5)
+        yield StreamingChunk(
+            stage="rerank",
+            content=f"🔄 重排序后保留 {rerank_count} 个最相关文档",
+            metadata={"count": rerank_count}
+        )
+
+        # Simulate thinking stage (if enabled)
+        if enable_thinking:
+            await asyncio.sleep(random.uniform(0.2, 0.4))
+            thinking = f"""💭 **思考过程**
+
+分析用户问题: {query}
+
+1. 识别关键信息...
+2. 匹配检索文档...
+3. 综合答案..."""
+            yield StreamingChunk(
+                stage="thinking",
+                content=thinking,
+                metadata={"tokens": {"thinking": random.randint(50, 150)}}
+            )
+
+        # Simulate generation stage (token by token)
+        await asyncio.sleep(random.uniform(0.3, 0.6))
+        answer = f"根据检索到的信息，关于 '{query}' 的回答是：这是一个模拟的RAG系统响应，用于演示流式输出功能。"
+
+        # Yield tokens in small chunks for realistic streaming effect
+        words = answer.split()
+        current_content = ""
+        for i, word in enumerate(words):
+            current_content += word + " "
+            if i % 3 == 0:  # Yield every 3 words
+                await asyncio.sleep(0.05)
+                yield StreamingChunk(
+                    stage="generation",
+                    content=current_content.strip(),
+                    metadata={"streaming": True, "progress": (i + 1) / len(words)}
+                )
+
+        # Final result
+        latency_ms = (time.time() - start_time) * 1000
+        yield StreamingChunk(
+            stage="final",
+            content=answer,
+            is_final=True,
+            metadata={
+                "success": True,
+                "latency_ms": latency_ms,
+                "is_refused": False
+            }
+        )
