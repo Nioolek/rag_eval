@@ -12,6 +12,8 @@ from ..core.exceptions import RAGConnectionError
 from ..core.logging import logger
 
 from .base_adapter import RAGAdapter, RAGAdapterConfig, StreamingChunk
+from .timing_config import TimingExtractionConfig, get_default_config
+from .timing_extractor import TimingExtractor
 
 
 class LangGraphAdapter(RAGAdapter):
@@ -20,8 +22,14 @@ class LangGraphAdapter(RAGAdapter):
     Implements async calls with retry logic.
     """
 
-    def __init__(self, config: RAGAdapterConfig):
+    def __init__(
+        self,
+        config: RAGAdapterConfig,
+        timing_config: Optional[TimingExtractionConfig] = None,
+    ):
         self.config = config
+        self.timing_config = timing_config or get_default_config()
+        self.timing_extractor = TimingExtractor(self.timing_config)
         self._client = None
         self._initialized = False
 
@@ -68,7 +76,7 @@ class LangGraphAdapter(RAGAdapter):
 
         for attempt in range(self.config.max_retries):
             try:
-                response = await self._query_internal(
+                response, raw_data = await self._query_internal(
                     query=query,
                     conversation_history=conversation_history or [],
                     agent_id=agent_id or "default",
@@ -78,6 +86,11 @@ class LangGraphAdapter(RAGAdapter):
 
                 latency_ms = (time.time() - start_time) * 1000
                 response.latency_ms = latency_ms
+
+                # Extract stage timing
+                response.stage_timing = self.timing_extractor.extract(
+                    raw_data, latency_ms
+                )
 
                 return response
 
@@ -107,8 +120,8 @@ class LangGraphAdapter(RAGAdapter):
         agent_id: str,
         enable_thinking: bool,
         **kwargs: Any,
-    ) -> RAGResponse:
-        """Internal query implementation."""
+    ) -> tuple[RAGResponse, dict[str, Any]]:
+        """Internal query implementation. Returns (response, raw_data)."""
         if self._client is None:
             # Fallback to HTTP request if RemoteGraph not available
             return await self._query_via_http(
@@ -135,7 +148,9 @@ class LangGraphAdapter(RAGAdapter):
         )
 
         # Parse response
-        return RAGResponseAdapter.from_langgraph(result, query)
+        raw_data = result if isinstance(result, dict) else result.__dict__ if hasattr(result, '__dict__') else {}
+        response = RAGResponseAdapter.from_langgraph(result, query)
+        return response, raw_data
 
     async def _query_via_http(
         self,
@@ -144,8 +159,8 @@ class LangGraphAdapter(RAGAdapter):
         agent_id: str,
         enable_thinking: bool,
         **kwargs: Any,
-    ) -> RAGResponse:
-        """Fallback HTTP query when LangGraph client not available."""
+    ) -> tuple[RAGResponse, dict[str, Any]]:
+        """Fallback HTTP query when LangGraph client not available. Returns (response, raw_data)."""
         import aiohttp
 
         url = f"{self.config.service_url}/invoke"
@@ -169,7 +184,8 @@ class LangGraphAdapter(RAGAdapter):
                     )
 
                 data = await response.json()
-                return RAGResponseAdapter.from_langgraph(data, query)
+                response = RAGResponseAdapter.from_langgraph(data, query)
+                return response, data
 
     async def query_from_annotation(
         self,
@@ -296,7 +312,7 @@ class LangGraphAdapter(RAGAdapter):
                 logger.warning(f"LangGraph streaming failed, falling back: {e}")
 
         # Fallback: run query and yield stages
-        response = await self._query_internal(
+        response, raw_data = await self._query_internal(
             query=query,
             conversation_history=conversation_history,
             agent_id=agent_id,
@@ -352,7 +368,7 @@ class LangGraphAdapter(RAGAdapter):
         except aiohttp.ClientError as e:
             # Fallback to non-streaming
             logger.warning(f"HTTP streaming failed, falling back: {e}")
-            response = await self._query_via_http(
+            response, raw_data = await self._query_via_http(
                 query=query,
                 conversation_history=conversation_history,
                 agent_id=agent_id,

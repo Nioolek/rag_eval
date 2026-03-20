@@ -219,4 +219,26 @@ def _register_default_metrics(registry: MetricRegistry) -> None:
     except ImportError:
         pass
 
+    # Register performance metrics
+    try:
+        from .performance import (
+            StageLatencyMetric,
+            TotalLatencyMetric,
+            LatencyDistributionMetric,
+            PerformanceComparisonMetric,
+            StageEfficiencyMetric,
+            ThroughputMetric,
+        )
+        for cls in [
+            StageLatencyMetric,
+            TotalLatencyMetric,
+            LatencyDistributionMetric,
+            PerformanceComparisonMetric,
+            StageEfficiencyMetric,
+            ThroughputMetric,
+        ]:
+            registry.register(cls)
+    except ImportError:
+        pass
+
     logger.info(f"Registered {len(registry)} default metrics")

@@ -16,6 +16,7 @@ class MetricCategory(str, Enum):
     GENERATION = "generation"
     FAQ = "faq"
     COMPREHENSIVE = "comprehensive"
+    PERFORMANCE = "performance"
 
 
 class MetricResult(BaseModel):

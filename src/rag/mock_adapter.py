@@ -19,6 +19,8 @@ from ..models.annotation import Annotation
 from ..core.logging import logger
 
 from .base_adapter import RAGAdapter, StreamingChunk
+from .timing_config import TimingExtractionConfig, get_mock_config
+from .timing_extractor import TimingExtractor
 
 
 class MockRAGAdapter(RAGAdapter):
@@ -33,11 +35,14 @@ class MockRAGAdapter(RAGAdapter):
         simulate_latency: bool = True,
         min_latency_ms: float = 100,
         max_latency_ms: float = 500,
+        timing_config: Optional[TimingExtractionConfig] = None,
     ):
         self._name = name
         self.simulate_latency = simulate_latency
         self.min_latency_ms = min_latency_ms
         self.max_latency_ms = max_latency_ms
+        self.timing_config = timing_config or get_mock_config()
+        self.timing_extractor = TimingExtractor(self.timing_config)
 
     @property
     def name(self) -> str:
@@ -70,6 +75,13 @@ class MockRAGAdapter(RAGAdapter):
         )
 
         response.latency_ms = (time.time() - start_time) * 1000
+
+        # Extract stage timing
+        raw_data = response.to_dict()
+        response.stage_timing = self.timing_extractor.extract(
+            raw_data, response.latency_ms
+        )
+
         return response
 
     def _generate_mock_response(

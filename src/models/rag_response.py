@@ -11,6 +11,56 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 
+class StageTiming(BaseModel):
+    """
+    RAG各阶段时间追踪模型。
+    记录查询改写、FAQ匹配、检索、重排序、生成等阶段的耗时。
+    """
+
+    # 各阶段耗时（毫秒）
+    query_rewrite_ms: float = 0.0
+    faq_match_ms: float = 0.0
+    retrieval_ms: float = 0.0
+    rerank_ms: float = 0.0
+    generation_ms: float = 0.0
+    total_ms: float = 0.0
+
+    # 数据来源标记
+    # "measured": 实测值, "extracted": 从响应提取, "calculated": 计算得出, "fallback": 按比例估算
+    source: str = "unknown"
+
+    # 各阶段数据来源详情
+    # 例如: {"query_rewrite": "state.timing", "retrieval": "calculated.from_count"}
+    extraction_details: dict[str, str] = Field(default_factory=dict)
+
+    # 原始时间戳（可选）
+    timestamps: dict[str, str] = Field(default_factory=dict)
+
+    def get_stage_timings(self) -> dict[str, float]:
+        """获取各阶段耗时字典"""
+        return {
+            "query_rewrite": self.query_rewrite_ms,
+            "faq_match": self.faq_match_ms,
+            "retrieval": self.retrieval_ms,
+            "rerank": self.rerank_ms,
+            "generation": self.generation_ms,
+        }
+
+    def get_percentages(self) -> dict[str, float]:
+        """计算各阶段耗时占比"""
+        if self.total_ms <= 0:
+            return {}
+
+        return {
+            stage: (ms / self.total_ms * 100)
+            for stage, ms in self.get_stage_timings().items()
+        }
+
+    def get_measured_total(self) -> float:
+        """获取各阶段实测总耗时（可能与total_ms不同）"""
+        return sum(self.get_stage_timings().values())
+
+
 class QueryRewrite(BaseModel):
     """Query rewrite result from RAG."""
     original_query: str
@@ -81,6 +131,9 @@ class RAGResponse(BaseModel):
     # Final answer
     final_answer: str = ""
     is_refused: bool = False  # Whether the system refused to answer
+
+    # Performance timing
+    stage_timing: Optional[StageTiming] = None
 
     # Additional metadata
     metadata: dict[str, Any] = Field(default_factory=dict)

@@ -161,6 +161,22 @@ def create_results_tab() -> gr.Tab:
                         elem_classes=["placeholder-text"],
                     )
 
+                # Performance Analysis Tab
+                with gr.TabItem("⚡ 性能分析"):
+                    with gr.Row():
+                        with gr.Column(scale=1):
+                            performance_summary = gr.Markdown(
+                                "选择结果查看性能分析...",
+                                elem_classes=["placeholder-text"],
+                            )
+                        with gr.Column(scale=1):
+                            performance_table = gr.Dataframe(
+                                headers=["阶段", "耗时 (ms)", "占比 (%)", "数据来源"],
+                                datatype=["str", "number", "number", "str"],
+                                interactive=False,
+                                label="各阶段耗时详情",
+                            )
+
         # Tag management section
         with gr.Group(elem_classes=["gr-box"]):
             gr.Markdown("**🏷️ 标签管理**")
@@ -367,13 +383,13 @@ def create_results_tab() -> gr.Tab:
         async def load_result_detail(evt: gr.SelectData, run_id: str):
             """Load detail for a selected result row."""
             if not run_id or evt.index is None:
-                return [gr.update() for _ in range(15)]
+                return [gr.update() for _ in range(13)]
 
             manager = await get_result_manager()
             results = await manager.get_results_by_run(run_id, limit=100)
 
             if evt.index >= len(results):
-                return [gr.update() for _ in range(15)]
+                return [gr.update() for _ in range(13)]
 
             result = results[evt.index]
 
@@ -465,6 +481,38 @@ def create_results_tab() -> gr.Tab:
             else:
                 tags_display = "**当前标签**: 无"
 
+            # Build performance analysis
+            perf_md = "### ⚡ 性能分析\n\n"
+            perf_table_data = []
+
+            if result.rag_response and result.rag_response.stage_timing:
+                timing = result.rag_response.stage_timing
+                percentages = timing.get_percentages()
+                stage_names = {
+                    "query_rewrite": "查询改写",
+                    "faq_match": "FAQ 匹配",
+                    "retrieval": "检索",
+                    "rerank": "重排序",
+                    "generation": "生成",
+                }
+
+                perf_md += f"**总耗时**: {timing.total_ms:.2f} ms\n\n"
+                perf_md += f"**数据来源**: {timing.source}\n\n"
+
+                for stage, ms in timing.get_stage_timings().items():
+                    stage_name = stage_names.get(stage, stage)
+                    pct = percentages.get(stage, 0)
+                    source = timing.extraction_details.get(stage, "unknown")
+
+                    perf_table_data.append([
+                        stage_name,
+                        round(ms, 2),
+                        round(pct, 2),
+                        source,
+                    ])
+            else:
+                perf_md += "*无 stage_timing 数据*"
+
             return (
                 gr.update(
                     value=result.annotation.query if result.annotation else ""
@@ -485,6 +533,9 @@ def create_results_tab() -> gr.Tab:
                 gr.update(value=retrieval_data),
                 gr.update(value=rerank_data),
                 gr.update(value=thinking_md),
+                # Performance analysis
+                gr.update(value=perf_md),
+                gr.update(value=perf_table_data),
                 # Tags
                 gr.update(value=tags_display),
             )
@@ -755,6 +806,9 @@ def create_results_tab() -> gr.Tab:
                 retrieval_table,
                 rerank_table,
                 thinking_info,
+                # Performance analysis
+                performance_summary,
+                performance_table,
                 # Tags
                 current_tags,
             ],
