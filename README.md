@@ -13,11 +13,12 @@
 ### 评测功能
 - 并发评测执行
 - 支持单/双 RAG 接口对比
-- 15+ 评测指标：
+- 20+ 评测指标：
   - 检索指标：精确率、召回率、MRR、Hit Rate
   - 生成指标：事实一致性、相关性、完整性、流畅度
   - FAQ 指标：匹配准确率、答案一致性
   - 综合指标：风格匹配、多轮一致性、幻觉检测
+  - 性能指标：各阶段延迟、吞吐量、效率分析
 
 ### 结果展示
 - 评测结果概览
@@ -123,6 +124,11 @@ pytest tests/ --cov=src --cov-report=html
 # 运行单个测试
 pytest tests/test_annotation.py -v
 ```
+
+## 文档
+
+- [性能评测教程](docs/performance_tutorial.md) - 各环节性能追踪和分析
+- [需求文档](requirement.md) - 详细功能需求
 
 ## API 文档
 
