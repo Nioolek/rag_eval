@@ -24,11 +24,12 @@
 
 | 组件 | 选型 | 说明 |
 |------|------|------|
+| Python | 3.13 | 与评测系统保持一致 |
 | 向量库 | Chroma | 纯Python、无依赖、嵌入模式 |
 | 全文检索 | Whoosh | 纯Python库、无需服务 |
 | 知识图谱 | Neo4j Community | Docker部署、成熟稳定 |
 | LLM | 阿里云通义千问 (Qwen) | qwen-plus/qwen-turbo/qwen-max |
-| Embedding | 阿里云 text-embedding-v3 | 支持中英文 |
+| Embedding | 阿里云 text-embedding-v3 | 支持中英文，维度1024/768/512/256/128 |
 | Rerank | 阿里云 gte-rerank | 重排序服务 |
 
 ---
@@ -152,6 +153,8 @@
 
 State是LangGraph图执行过程中传递的数据结构，定义了各阶段的输入输出。
 
+### 3.1 完整State定义
+
 ```python
 class RAGState(TypedDict):
     """RAG Pipeline 状态定义"""
@@ -203,7 +206,93 @@ class RAGState(TypedDict):
     # === 元数据 ===
     stage_timing: dict[str, float]          # 各阶段耗时
     metadata: dict
-    errors: list[str]
+    errors: list[dict]
+```
+
+### 3.2 关键字段结构定义
+
+#### conversation_history 结构
+
+```python
+# 对话历史中的每条消息
+{
+    "role": "user" | "assistant",   # 角色
+    "content": str,                  # 消息内容
+    "timestamp": str                 # ISO格式时间戳
+}
+```
+
+#### faq_result 结构
+
+```python
+# FAQ匹配结果
+{
+    "faq_id": str,                   # FAQ ID
+    "question": str,                 # FAQ问题
+    "answer": str,                   # FAQ答案
+    "confidence": float,             # 匹配置信度
+    "match_type": "exact" | "semantic"  # 匹配类型
+}
+```
+
+#### 检索结果结构 (vector_results, fulltext_results, graph_results)
+
+```python
+# 单条检索结果
+{
+    "document_id": str,              # 文档ID
+    "content": str,                  # 文档内容
+    "score": float,                  # 检索分数
+    "source": str,                   # 来源标识
+    "metadata": {                    # 元数据
+        "title": str,
+        "category": str,
+        "keywords": list[str]
+    }
+}
+```
+
+#### stage_timing 结构
+
+```python
+# 各阶段耗时（毫秒）
+{
+    "input_ms": float,
+    "faq_match_ms": float,
+    "query_rewrite_ms": float,
+    "vector_retrieve_ms": float,
+    "fulltext_retrieve_ms": float,
+    "graph_retrieve_ms": float,
+    "merge_ms": float,
+    "rerank_ms": float,
+    "build_prompt_ms": float,
+    "refusal_check_ms": float,
+    "generation_ms": float,
+    "total_ms": float
+}
+```
+
+#### errors 结构
+
+```python
+# 错误信息
+{
+    "stage": str,                    # 发生错误的阶段
+    "type": str,                     # 错误类型
+    "message": str,                  # 错误消息
+    "timestamp": str                 # ISO格式时间戳
+}
+```
+
+#### token_usage 结构
+
+```python
+# Token使用统计
+{
+    "prompt_tokens": int,
+    "completion_tokens": int,
+    "total_tokens": int
+}
 ```
 
 ---
@@ -297,6 +386,149 @@ retrieval:
 
 动态权重调整：当某个检索源不可用时，自动重新分配权重。
 
+### 5.4 知识图谱Schema
+
+#### 实体类型
+
+| 实体类型 | 说明 | 属性 |
+|----------|------|------|
+| Person | 人物 | name, department, position |
+| Department | 部门 | name, description |
+| Product | 产品 | name, version, category |
+| Document | 文档 | title, type, url |
+| Concept | 概念/术语 | name, definition |
+| Event | 事件 | name, date, description |
+
+#### 关系类型
+
+| 关系类型 | 起点 | 终点 | 说明 |
+|----------|------|------|------|
+| BELONGS_TO | Person | Department | 隶属关系 |
+| RESPONSIBLE_FOR | Person | Document | 负责文档 |
+| RELATED_TO | Document | Concept | 涉及概念 |
+| PART_OF | Document | Document | 文档层级 |
+| DEPENDS_ON | Product | Product | 产品依赖 |
+| MENTIONED_IN | Entity | Document | 出现于文档 |
+
+#### Neo4j初始化
+
+```cypher
+// 创建约束
+CREATE CONSTRAINT person_id IF NOT EXISTS FOR (p:Person) REQUIRE p.id IS UNIQUE;
+CREATE CONSTRAINT dept_id IF NOT EXISTS FOR (d:Department) REQUIRE d.id IS UNIQUE;
+CREATE CONSTRAINT doc_id IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE;
+CREATE CONSTRAINT concept_id IF NOT EXISTS FOR (c:Concept) REQUIRE c.id IS UNIQUE;
+
+// 创建索引
+CREATE INDEX person_name IF NOT EXISTS FOR (p:Person) ON (p.name);
+CREATE INDEX concept_name IF NOT EXISTS FOR (c:Concept) ON (c.name);
+```
+
+### 5.5 文档分块策略
+
+```python
+@dataclass
+class ChunkingConfig:
+    """分块配置"""
+    chunk_size: int = 500           # 分块大小（字符）
+    chunk_overlap: int = 50         # 重叠大小
+    min_chunk_size: int = 100       # 最小分块大小
+    respect_sentence_boundary: bool = True  # 尊重句子边界
+
+class DocumentChunker:
+    """文档分块器"""
+
+    def chunk(self, document: Document) -> list[Chunk]:
+        """
+        分块策略：
+        1. 按段落分割
+        2. 超过chunk_size的段落进一步分割
+        3. 保持句子完整性
+        4. 添加重叠以保持上下文
+        """
+        chunks = []
+
+        # 1. 按段落分割
+        paragraphs = self._split_paragraphs(document.content)
+
+        # 2. 处理每个段落
+        current_chunk = ""
+        for para in paragraphs:
+            if len(current_chunk) + len(para) <= self.config.chunk_size:
+                current_chunk += para + "\n"
+            else:
+                # 保存当前块
+                if current_chunk:
+                    chunks.append(self._create_chunk(current_chunk, document))
+
+                # 处理超长段落
+                if len(para) > self.config.chunk_size:
+                    sub_chunks = self._split_long_paragraph(para, document)
+                    chunks.extend(sub_chunks)
+                    current_chunk = ""
+                else:
+                    current_chunk = para + "\n"
+
+        # 保存最后一块
+        if current_chunk:
+            chunks.append(self._create_chunk(current_chunk, document))
+
+        return chunks
+```
+
+### 5.6 实体提取Pipeline
+
+```python
+class EntityExtractor:
+    """实体提取器"""
+
+    def __init__(self, llm_service: LLMService):
+        self.llm_service = llm_service
+
+    async def extract(self, text: str) -> list[Entity]:
+        """
+        从文本中提取实体
+
+        使用LLM进行实体识别，返回结构化实体列表
+        """
+        prompt = f"""请从以下文本中提取实体。
+
+文本:
+{text}
+
+请识别以下类型的实体：
+- Person: 人物姓名
+- Department: 部门名称
+- Product: 产品名称
+- Concept: 专业术语或概念
+
+输出JSON格式：
+[
+  {{"name": "实体名称", "type": "实体类型", "confidence": 0.0-1.0}}
+]
+"""
+        response = await self.llm_service.generate(
+            system_prompt="你是一个专业的实体识别助手。",
+            user_prompt=prompt,
+            temperature=0.1
+        )
+
+        import json
+        try:
+            entities = json.loads(response.content)
+            return [Entity(**e) for e in entities]
+        except:
+            return []
+
+    async def extract_relations(
+        self,
+        text: str,
+        entities: list[Entity]
+    ) -> list[Relation]:
+        """提取实体间关系"""
+        # ... 关系提取逻辑
+```
+
 ---
 
 ## 6. 外部服务层
@@ -309,7 +541,37 @@ retrieval:
 | Embedding | text-embedding-v3 | 文本向量化 | dashscope.aliyuncs.com |
 | Rerank | gte-rerank | 检索结果重排序 | dashscope.aliyuncs.com |
 
-### 6.2 内部服务
+### 6.2 服务超时与重试配置
+
+```yaml
+service_timeouts:
+  llm:
+    timeout: 60              # 秒
+    max_retries: 3
+    retry_delay: 1.0         # 秒，指数退避
+  embedding:
+    timeout: 30
+    max_retries: 3
+    retry_delay: 0.5
+  rerank:
+    timeout: 30
+    max_retries: 2
+    retry_delay: 0.5
+
+retrieval_timeouts:
+  vector_store:
+    timeout: 10
+  fulltext_store:
+    timeout: 10
+  graph_store:
+    timeout: 15
+
+rate_limits:
+  dashscope_qpm: 60          # 每分钟请求数限制
+  embedding_batch_size: 20   # Embedding批量大小
+```
+
+### 6.3 内部服务
 
 | 服务 | 功能 |
 |------|------|
@@ -317,6 +579,97 @@ retrieval:
 | PromptTemplateManager | 提示词模板管理 |
 | ConfigManager | 配置热更新管理 |
 | DegradationManager | 服务降级管理 |
+
+### 6.4 提示词模板
+
+#### 默认模板 (default.yaml)
+
+```yaml
+name: default
+system: |
+  你是一个专业的企业知识库助手。
+  你的职责是基于提供的知识库内容，准确、专业地回答用户问题。
+
+  ## 回答原则
+  1. 只使用提供的上下文信息回答问题
+  2. 如果上下文不足以回答，请诚实说明
+  3. 回答要简洁、准确、有条理
+  4. 使用专业的语言风格
+
+  ## 知识领域
+  {domain}
+
+user: |
+  ## 相关上下文
+  {context}
+
+  ## 对话历史
+  {conversation_history}
+
+  ## 用户问题
+  {query}
+
+  请基于上下文回答用户问题。
+```
+
+#### 思考模式模板 (thinking.yaml)
+
+```yaml
+name: thinking
+system: |
+  你是一个专业的企业知识库助手，擅长深度思考和分析。
+
+  ## 思考模式
+  在回答之前，请先进行深入思考：
+  1. 分析问题的核心意图
+  2. 评估上下文的相关性和可靠性
+  3. 构建回答的逻辑框架
+
+  ## 输出格式
+  <thinking>
+  [你的思考过程]
+  </thinking>
+  [你的最终回答]
+
+  ## 知识领域
+  {domain}
+
+user: |
+  ## 相关上下文
+  {context}
+
+  ## 用户问题
+  {query}
+
+  请先进行思考分析，然后给出回答。
+```
+
+#### 模板加载机制
+
+```python
+class PromptTemplateManager:
+    def __init__(self, template_dir: str):
+        self.templates = {}
+        self._load_templates(template_dir)
+
+    def render(
+        self,
+        template_name: str,
+        context: str,
+        query: str,
+        conversation_history: str = "",
+        domain: str = "企业知识库"
+    ) -> tuple[str, str]:
+        """渲染模板，返回(system_prompt, user_prompt)"""
+        template = self.templates.get(template_name, self.templates["default"])
+        system_prompt = template["system"].format(domain=domain)
+        user_prompt = template["user"].format(
+            context=context,
+            query=query,
+            conversation_history=conversation_history
+        )
+        return system_prompt, user_prompt
+```
 
 ---
 
@@ -380,9 +733,64 @@ def build_graph() -> StateGraph:
     return workflow
 ```
 
-### 7.2 并行执行
+### 7.2 并行执行机制
 
-LangGraph自动并行执行无依赖关系的节点。三个检索节点（vector_retrieve, fulltext_retrieve, graph_retrieve）会并行执行，merge_node等待所有输入完成后执行。
+LangGraph的并行执行采用fan-out/fan-in模式：
+
+```
+                 ┌─────────────────┐
+                 │  query_rewrite  │
+                 └────────┬────────┘
+                          │
+            ┌─────────────┼─────────────┐
+            │             │             │
+            ▼             ▼             ▼
+     ┌──────────┐  ┌──────────┐  ┌──────────┐
+     │  vector  │  │ fulltext │  │  graph   │
+     │ retrieve │  │ retrieve │  │ retrieve │
+     └────┬─────┘  └────┬─────┘  └────┬─────┘
+          │             │             │
+          └─────────────┼─────────────┘
+                        │
+                        ▼
+                 ┌──────────┐
+                 │  merge   │
+                 └──────────┘
+```
+
+**执行机制说明**：
+
+1. LangGraph检测到多个节点从同一节点接收输入时，自动并行执行
+2. merge_node等待所有输入节点完成后才执行
+3. 每个检索节点独立运行，失败不影响其他节点
+
+**并行执行代码实现**：
+
+```python
+# 在节点内部使用asyncio.gather进行显式并行
+async def parallel_retrieve_internal(state: RAGState) -> dict:
+    """内部并行检索协调"""
+    query = state.get("rewritten_query") or state["query"]
+
+    # 使用asyncio.gather并行执行
+    results = await asyncio.gather(
+        _vector_retrieve(query),
+        _fulltext_retrieve(query),
+        _graph_retrieve(query),
+        return_exceptions=True
+    )
+
+    # 处理结果和异常
+    vector_results = results[0] if not isinstance(results[0], Exception) else []
+    fulltext_results = results[1] if not isinstance(results[1], Exception) else []
+    graph_results = results[2] if not isinstance(results[2], Exception) else []
+
+    return {
+        "vector_results": vector_results,
+        "fulltext_results": fulltext_results,
+        "graph_results": graph_results
+    }
+```
 
 ---
 
@@ -404,6 +812,13 @@ LangGraph自动并行执行无依赖关系的节点。三个检索节点（vecto
 class ConfigManager:
     """配置管理器"""
 
+    def __init__(self, config_path: Optional[str] = None):
+        self.config_path = config_path
+        self._config: Optional[RAGConfig] = None
+        self._lock = asyncio.Lock()  # 配置锁，确保原子更新
+        self._reload_callbacks: list[Callable] = []
+        self._observer: Optional[Observer] = None
+
     def start_watching(self) -> None:
         """启动配置文件监听"""
 
@@ -413,8 +828,46 @@ class ConfigManager:
     def on_reload(self, callback: Callable) -> None:
         """注册重载回调"""
 
-    def reload_now(self) -> None:
-        """立即重载"""
+    async def reload_now(self) -> None:
+        """立即重载配置（原子操作）"""
+        async with self._lock:
+            # 1. 加载新配置
+            new_config = RAGConfig.from_yaml(self.config_path)
+
+            # 2. 验证配置有效性
+            self._validate_config(new_config)
+
+            # 3. 原子替换
+            old_config = self._config
+            self._config = new_config
+
+            # 4. 通知服务更新（带回滚能力）
+            try:
+                for callback in self._reload_callbacks:
+                    await callback(new_config)
+            except Exception as e:
+                # 回滚到旧配置
+                self._config = old_config
+                logger.error(f"Config reload failed, rolled back: {e}")
+                raise
+```
+
+#### 配置更新通知机制
+
+```python
+# 服务注册配置更新回调
+async def on_config_change(new_config: RAGConfig):
+    """服务配置变更处理"""
+    # 1. 检查是否需要重连
+    if llm_service.config.model != new_config.llm.model:
+        await llm_service.reconnect(new_config.llm)
+
+    # 2. 重置熔断器状态
+    if degradation_manager:
+        degradation_manager.reset_circuit_breaker("llm")
+
+# 注册回调
+config_manager.on_reload(on_config_change)
 ```
 
 ### 8.3 配置结构
@@ -477,6 +930,37 @@ class CircuitBreaker:
 | **LLM** | 1. 备用模型(qwen-turbo)<br>2. 模板回复 | 降级模型或模板 |
 | **Query Rewrite** | 简单规则改写 | 拼接历史上下文 |
 
+#### Rerank降级说明
+
+Rerank降级使用本地BM25重排时，与初始全文检索的BM25不同：
+
+1. **初始BM25**：基于Whoosh对原始文档库进行检索，返回top_k文档
+2. **降级BM25重排**：对已检索到的文档（来自向量、全文、图谱三路融合结果）进行重新打分排序
+
+```python
+async def _rerank_fallback(self, query: str, documents: list[str]) -> list:
+    """
+    Rerank降级：本地BM25重排
+
+    与初始BM25检索的区别：
+    - 初始检索：从百万级文档中检索top_k
+    - 降级重排：对已检索到的几十个文档重新排序
+    """
+    from rank_bm25 import BM25Okapi
+
+    tokenized_docs = [doc.split() for doc in documents]
+    bm25 = BM25Okapi(tokenized_docs)
+    scores = bm25.get_scores(query.split())
+
+    # 按分数排序
+    indexed_scores = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+
+    return [
+        RerankResult(index=idx, score=score, document=documents[idx])
+        for idx, score in indexed_scores[:self.top_k]
+    ]
+```
+
 ### 9.3 降级装饰器
 
 ```python
@@ -499,6 +983,69 @@ vector_weight: 0.5, fulltext_weight: 0.3, graph_weight: 0.2
 # Vector不可用时，重新分配
 fulltext_weight: 0.6, graph_weight: 0.4
 ```
+
+### 9.5 检索结果融合算法
+
+使用**加权分数融合**（Weighted Score Fusion）算法合并多路检索结果：
+
+```python
+def merge_results(
+    vector_results: list[dict],
+    fulltext_results: list[dict],
+    graph_results: list[dict],
+    weights: dict[str, float]
+) -> list[dict]:
+    """
+    加权分数融合算法
+
+    算法说明：
+    1. 各路结果分数归一化到0-1
+    2. 按document_id合并相同文档
+    3. 加权求和计算综合分数
+    4. 按综合分数排序
+    """
+    merged = {}
+
+    # 归一化并加权
+    for result in vector_results:
+        doc_id = result["document_id"]
+        normalized_score = _normalize_score(result["score"], "vector")
+        merged[doc_id] = {
+            **result,
+            "vector_score": normalized_score,
+            "combined_score": normalized_score * weights["vector"]
+        }
+
+    for result in fulltext_results:
+        doc_id = result["document_id"]
+        normalized_score = _normalize_score(result["score"], "fulltext")
+        if doc_id in merged:
+            merged[doc_id]["fulltext_score"] = normalized_score
+            merged[doc_id]["combined_score"] += normalized_score * weights["fulltext"]
+        else:
+            merged[doc_id] = {
+                **result,
+                "fulltext_score": normalized_score,
+                "combined_score": normalized_score * weights["fulltext"]
+            }
+
+    # ... 类似处理graph_results
+
+    # 按综合分数排序
+    return sorted(merged.values(), key=lambda x: x["combined_score"], reverse=True)
+
+def _normalize_score(score: float, source: str) -> float:
+    """分数归一化"""
+    # 向量检索：余弦相似度已在0-1范围
+    # 全文检索：BM25分数需要归一化
+    if source == "fulltext":
+        return min(score / 10.0, 1.0)  # 假设BM25分数上限约10
+    return score
+```
+
+**为什么不使用RRF（Reciprocal Rank Fusion）？**
+
+RRF仅考虑排名位置，忽略具体分数。对于需要精细区分相关性的场景，加权分数融合更合适。
 
 ---
 
@@ -571,7 +1118,7 @@ rag_rag/
 
 ```json
 {
-  "python_version": "3.11",
+  "python_version": "3.13",
   "dependencies": ["."],
   "graphs": {
     "rag_agent": "./src/rag_rag/graph/graph.py:graph"
@@ -580,7 +1127,58 @@ rag_rag/
 }
 ```
 
-### 11.3 API端点
+### 11.3 API认证
+
+LangGraph API支持多种认证方式：
+
+```yaml
+# config/auth.yaml
+auth:
+  enabled: true
+  type: "api_key"           # api_key | jwt | oauth2
+
+  # API Key认证
+  api_key:
+    header: "X-API-Key"
+    keys:
+      - name: "evaluator"   # 评测系统专用
+        key: "${EVAL_API_KEY}"
+        rate_limit: 100     # 每分钟请求数
+      - name: "user"
+        key: "${USER_API_KEY}"
+        rate_limit: 30
+
+  # JWT认证（可选）
+  jwt:
+    secret: "${JWT_SECRET}"
+    issuer: "rag-system"
+    expiry_hours: 24
+```
+
+#### 认证中间件
+
+```python
+from fastapi import Request, HTTPException
+
+async def auth_middleware(request: Request, call_next):
+    """API认证中间件"""
+    api_key = request.headers.get("X-API-Key")
+
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing API Key")
+
+    if not validate_api_key(api_key):
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+
+    # 检查速率限制
+    if await rate_limiter.is_exceeded(api_key):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
+    response = await call_next(request)
+    return response
+```
+
+### 11.4 API端点
 
 | 端点 | 方法 | 功能 |
 |------|------|------|
@@ -636,6 +1234,86 @@ result = await rag_client.ainvoke({
 | final_answer | 最终答案 | 生成质量评测 |
 | stage_timing | 各阶段耗时 | 性能评测 |
 | should_refuse | 是否拒答 | 拒答策略评测 |
+
+### 12.3 输出格式规范
+
+API返回的完整JSON结构：
+
+```json
+{
+  "query": "如何申请年假？",
+  "conversation_id": "uuid-string",
+
+  "faq_matched": false,
+  "faq_result": null,
+
+  "original_query": "如何申请年假？",
+  "rewritten_query": "企业员工年假申请流程和条件",
+  "rewrite_type": "expansion",
+  "rewrite_confidence": 0.85,
+
+  "vector_results": [
+    {
+      "document_id": "doc-001",
+      "content": "年假申请流程...",
+      "score": 0.92,
+      "source": "chroma",
+      "metadata": {"title": "员工手册", "category": "休假制度"}
+    }
+  ],
+  "fulltext_results": [...],
+  "graph_results": [...],
+
+  "reranked_results": [
+    {
+      "document_id": "doc-001",
+      "content": "年假申请流程...",
+      "rerank_score": 0.95,
+      "rank": 1
+    }
+  ],
+  "rerank_scores": [0.95, 0.87, 0.82],
+
+  "should_refuse": false,
+  "refusal_reason": "",
+  "refusal_type": "",
+
+  "system_prompt": "你是一个专业的企业知识库助手...",
+  "context_prompt": "## 相关上下文\n1. 年假申请流程...",
+  "final_prompt": "## 相关上下文\n...\n## 用户问题\n如何申请年假？",
+  "prompt_template_name": "default",
+
+  "thinking_process": "",
+  "final_answer": "根据员工手册，年假申请流程如下...",
+  "token_usage": {
+    "prompt_tokens": 450,
+    "completion_tokens": 120,
+    "total_tokens": 570
+  },
+
+  "stage_timing": {
+    "input_ms": 2.5,
+    "faq_match_ms": 15.3,
+    "query_rewrite_ms": 320.5,
+    "vector_retrieve_ms": 45.2,
+    "fulltext_retrieve_ms": 23.1,
+    "graph_retrieve_ms": 38.7,
+    "merge_ms": 1.2,
+    "rerank_ms": 120.5,
+    "build_prompt_ms": 0.8,
+    "refusal_check_ms": 85.3,
+    "generation_ms": 1250.6,
+    "total_ms": 1903.7
+  },
+
+  "metadata": {
+    "model": "qwen-plus",
+    "degraded_sources": []
+  },
+
+  "errors": []
+}
+```
 
 ---
 
