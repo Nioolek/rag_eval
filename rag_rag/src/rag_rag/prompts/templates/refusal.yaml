@@ -1,0 +1,6 @@
+name: refusal
+description: Refusal response templates
+templates:
+  out_of_domain: "抱歉，这个问题超出了我的知识范围，我无法回答。如有其他问题，我很乐意帮助您。"
+  sensitive: "抱歉，这个问题涉及敏感内容，我无法回答。"
+  low_relevance: "抱歉，我在知识库中没有找到与您问题相关的信息，无法给出准确回答。建议您提供更多细节或尝试其他问题。"

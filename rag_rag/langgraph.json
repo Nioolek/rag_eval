@@ -1,0 +1,8 @@
+{
+  "python_version": "3.13",
+  "dependencies": ["."],
+  "graphs": {
+    "rag_agent": "./src/rag_rag/graph/graph.py:graph"
+  },
+  "env": ".env"
+}

@@ -1,0 +1,49 @@
+# RAG Pipeline Configuration
+
+llm:
+  model: "qwen-plus"
+  temperature: 0.7
+  max_tokens: 2048
+  enable_thinking: false
+  timeout: 60
+
+embedding:
+  model: "text-embedding-v3"
+  dimension: 1024
+  batch_size: 20
+  timeout: 30
+
+rerank:
+  model: "gte-rerank"
+  top_k: 5
+  timeout: 30
+
+storage:
+  data_dir: "./data"
+  neo4j_uri: "bolt://localhost:7687"
+  neo4j_user: "neo4j"
+  neo4j_password: "password"
+
+retrieval:
+  vector_top_k: 20
+  fulltext_top_k: 20
+  graph_top_k: 10
+  vector_weight: 0.5
+  fulltext_weight: 0.3
+  graph_weight: 0.2
+
+session:
+  max_history_turns: 5
+
+faq:
+  match_threshold: 0.85
+  enable_semantic_match: true
+
+refusal:
+  out_of_domain_threshold: 0.3
+  sensitive_words_enabled: true
+
+degradation:
+  circuit_breaker:
+    failure_threshold: 3
+    recovery_timeout: 60
