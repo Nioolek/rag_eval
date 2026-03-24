@@ -34,8 +34,8 @@ def create_app() -> gr.Blocks:
         fill_width=False,
     ) as app:
         # ===== Header =====
-        with gr.HTML(elem_classes=["app-header"]):
-            gr.HTML("""
+        gr.HTML(
+            """
                 <h1>
                     <span style="font-size: 32px;">📊</span>
                     RAG 评测系统
@@ -43,7 +43,9 @@ def create_app() -> gr.Blocks:
                 <p class="subtitle">
                     企业级 RAG 评估框架 · 支持标注管理、并发评测、多维度指标分析
                 </p>
-            """)
+            """,
+            elem_classes=["app-header"],
+        )
 
         # ===== Main Navigation Tabs =====
         with gr.Tabs(elem_classes=["main-tabs"]) as tabs:
@@ -72,8 +74,8 @@ def create_app() -> gr.Blocks:
                 scheduler_components = create_scheduler_tab()
 
         # ===== Footer =====
-        with gr.HTML(elem_classes=["app-footer"]):
-            gr.HTML("""
+        gr.HTML(
+            """
                 <p>
                     RAG Evaluation System v1.0.0
                     <span style="margin: 0 8px;">•</span>
@@ -84,7 +86,9 @@ def create_app() -> gr.Blocks:
                     <span style="margin: 0 8px;">•</span>
                     <a href="https://github.com" target="_blank">GitHub</a>
                 </p>
-            """)
+            """,
+            elem_classes=["app-footer"],
+        )
 
         # 注意: tabs.select 事件处理器在 Gradio 6.x 中暂时禁用
         # 如果需要恢复tab选择事件，需要更新函数签名
