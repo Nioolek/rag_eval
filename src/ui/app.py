@@ -3,14 +3,12 @@ Main application entry point.
 RAG Evaluation System - Modern Professional UI
 """
 
-import asyncio
 from typing import Optional
 
 import gradio as gr
 
 from ..core.config import get_config
 from ..core.logging import logger, setup_logging
-from ..storage.storage_factory import init_storage
 from ..evaluation.metrics.metric_registry import get_registry
 from .theme import create_modern_theme, CUSTOM_CSS
 from .components.annotation_tab import create_annotation_tab
@@ -29,12 +27,10 @@ def create_app() -> gr.Blocks:
         Gradio Blocks application with enhanced UI
     """
     config = get_config()
-    theme = create_modern_theme()
 
+    # Note: In Gradio 6.x, theme is passed to launch() not Blocks()
     with gr.Blocks(
         title="RAG 评测系统",
-        theme=theme,
-        css=CUSTOM_CSS,
         fill_width=False,
     ) as app:
         # ===== Header =====
@@ -53,27 +49,27 @@ def create_app() -> gr.Blocks:
         with gr.Tabs(elem_classes=["main-tabs"]) as tabs:
             # Tab 1: 标注管理
             with gr.TabItem("📝 标注管理", id="annotation"):
-                create_annotation_tab()
+                annotation_components = create_annotation_tab()
 
             # Tab 2: 评测执行
             with gr.TabItem("⚡ 评测执行", id="evaluation"):
-                create_evaluation_tab()
+                evaluation_components = create_evaluation_tab()
 
             # Tab 3: 结果查看
             with gr.TabItem("📈 结果查看", id="results"):
-                create_results_tab()
+                results_components = create_results_tab()
 
             # Tab 4: 对比分析
             with gr.TabItem("⚖️ 对比分析", id="comparison"):
-                create_comparison_tab()
+                comparison_components = create_comparison_tab()
 
             # Tab 5: 标注统计
             with gr.TabItem("📊 标注统计", id="statistics"):
-                create_statistics_tab()
+                statistics_components = create_statistics_tab()
 
             # Tab 6: 定时任务
             with gr.TabItem("⏰ 定时任务", id="scheduler"):
-                create_scheduler_tab()
+                scheduler_components = create_scheduler_tab()
 
         # ===== Footer =====
         with gr.HTML(elem_classes=["app-footer"]):
@@ -90,17 +86,10 @@ def create_app() -> gr.Blocks:
                 </p>
             """)
 
-        # ===== Load on tab select =====
-        def on_tab_select(evt: gr.SelectData):
-            """Handle tab selection events."""
-            logger.info(f"Tab selected: {evt.value}")
+        # 注意: tabs.select 事件处理器在 Gradio 6.x 中暂时禁用
+        # 如果需要恢复tab选择事件，需要更新函数签名
 
-        tabs.select(fn=on_tab_select)
-
-    # Enable queue for concurrent request handling
-    # max_size limits the number of requests waiting in queue
-    app.queue(max_size=20)
-
+    # 不调用 queue() - 使用 Gradio 6.x 的默认行为
     return app
 
 
@@ -124,15 +113,15 @@ def run_app(
     logger.info("🚀 Starting RAG Evaluation System...")
     logger.info("✨ Modern UI theme enabled")
 
-    # Initialize storage
-    asyncio.run(init_storage())
-
     # Initialize metrics registry
     registry = get_registry()
     logger.info(f"📊 Loaded {len(registry)} metrics")
 
     # Get config
     config = get_config()
+
+    # Create theme
+    theme = create_modern_theme()
 
     # Create app with enhanced theme
     app = create_app()
@@ -141,8 +130,8 @@ def run_app(
     host = server_name or config.ui.server_name
     port = server_port or config.ui.server_port
     max_threads = config.ui.max_threads
-    logger.info(f"🌐 Starting server on http://{host}:{port}")
-    logger.info(f"🔧 Max threads: {max_threads}")
+    logger.info(f"Starting server on http://{host}:{port}")
+    logger.info(f"Max threads: {max_threads}")
 
     app.launch(
         server_name=host,
@@ -150,8 +139,10 @@ def run_app(
         share=share if share is not None else config.ui.share,
         show_error=True,
         quiet=not debug,
-        favicon_path=None,  # Can add custom favicon later
+        favicon_path=None,
         max_threads=max_threads,
+        theme=theme,
+        css=CUSTOM_CSS,
     )
 
 
