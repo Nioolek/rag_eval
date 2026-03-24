@@ -227,7 +227,14 @@ def create_annotation_tab() -> None:
     async def load_annotation_detail(selected_data):
         """Load annotation detail when a row is selected."""
         # Gradio 6.x: selected_data from DataFrame is a list, not empty check needs proper handling
-        if selected_data is None or (isinstance(selected_data, (list, tuple)) and len(selected_data) == 0):
+        if selected_data is None or not isinstance(selected_data, (list, tuple)) or len(selected_data) == 0:
+            return [gr.update() for _ in range(12)]
+
+        # Gradio 6.x may return nested list
+        if isinstance(selected_data[0], (list, tuple)):
+            selected_data = selected_data[0]
+
+        if not selected_data or len(selected_data) == 0:
             return [gr.update() for _ in range(12)]
 
         # Get ID from first column
