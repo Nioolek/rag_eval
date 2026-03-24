@@ -55,3 +55,13 @@ class ValidationError(RAGEvalError):
 class PathTraversalError(StorageError):
     """Raised when path traversal attack is detected."""
     pass
+
+
+class TaskError(RAGEvalError):
+    """Raised when task operations fail."""
+    pass
+
+
+class SchedulerError(RAGEvalError):
+    """Raised when scheduler operations fail."""
+    pass

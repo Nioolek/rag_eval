@@ -25,7 +25,13 @@ class LocalStorage(StorageBackend):
     def __init__(self, data_dir: Path, chunk_size: int = 8192):
         self.data_dir = Path(data_dir)
         self.chunk_size = chunk_size
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None  # Lazy-initialized lock
+
+    def _get_lock(self) -> asyncio.Lock:
+        """Get or create the lock (lazy initialization)."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     def _get_collection_path(self, collection: str) -> Path:
         """Get the file path for a collection with path traversal protection."""
@@ -74,7 +80,7 @@ class LocalStorage(StorageBackend):
 
         data["_saved_at"] = datetime.now().isoformat()
 
-        async with self._lock:
+        async with self._get_lock():
             async with aiofiles.open(path, mode='a', encoding='utf-8') as f:
                 await f.write(json.dumps(data, ensure_ascii=False) + '\n')
 
@@ -88,17 +94,19 @@ class LocalStorage(StorageBackend):
         if not path.exists():
             return None
 
-        async with aiofiles.open(path, mode='r', encoding='utf-8') as f:
-            async for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                    if data.get("id") == record_id and not data.get("is_deleted"):
-                        return data
-                except json.JSONDecodeError:
-                    continue
+        # Use read lock for consistency during concurrent writes
+        async with self._get_lock():
+            async with aiofiles.open(path, mode='r', encoding='utf-8') as f:
+                async for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        if data.get("id") == record_id and not data.get("is_deleted"):
+                            return data
+                    except json.JSONDecodeError:
+                        continue
 
         return None
 
@@ -118,41 +126,43 @@ class LocalStorage(StorageBackend):
         results = []
         skipped = 0
 
-        async with aiofiles.open(path, mode='r', encoding='utf-8') as f:
-            async for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-
-                    # Skip deleted records
-                    if data.get("is_deleted"):
+        # Use read lock for consistency during concurrent writes
+        async with self._get_lock():
+            async with aiofiles.open(path, mode='r', encoding='utf-8') as f:
+                async for line in f:
+                    line = line.strip()
+                    if not line:
                         continue
+                    try:
+                        data = json.loads(line)
 
-                    # Apply filters
-                    if filters:
-                        match = all(
-                            data.get(k) == v or
-                            (isinstance(v, list) and data.get(k) in v) or
-                            (isinstance(v, dict) and data.get(k) is not None)
-                            for k, v in filters.items()
-                        )
-                        if not match:
+                        # Skip deleted records
+                        if data.get("is_deleted"):
                             continue
 
-                    # Apply offset
-                    if skipped < offset:
-                        skipped += 1
+                        # Apply filters
+                        if filters:
+                            match = all(
+                                data.get(k) == v or
+                                (isinstance(v, list) and data.get(k) in v) or
+                                (isinstance(v, dict) and data.get(k) is not None)
+                                for k, v in filters.items()
+                            )
+                            if not match:
+                                continue
+
+                        # Apply offset
+                        if skipped < offset:
+                            skipped += 1
+                            continue
+
+                        results.append(data)
+
+                        if len(results) >= limit:
+                            break
+
+                    except json.JSONDecodeError:
                         continue
-
-                    results.append(data)
-
-                    if len(results) >= limit:
-                        break
-
-                except json.JSONDecodeError:
-                    continue
 
         return results
 
@@ -191,7 +201,7 @@ class LocalStorage(StorageBackend):
             return False
 
         # Rewrite file
-        async with self._lock:
+        async with self._get_lock():
             async with aiofiles.open(path, mode='w', encoding='utf-8') as f:
                 for record in records:
                     await f.write(json.dumps(record, ensure_ascii=False) + '\n')
@@ -214,22 +224,24 @@ class LocalStorage(StorageBackend):
             return 0
 
         count = 0
-        async with aiofiles.open(path, mode='r', encoding='utf-8') as f:
-            async for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                    if data.get("is_deleted"):
+        # Use read lock for consistency during concurrent writes
+        async with self._get_lock():
+            async with aiofiles.open(path, mode='r', encoding='utf-8') as f:
+                async for line in f:
+                    line = line.strip()
+                    if not line:
                         continue
-                    if filters:
-                        match = all(data.get(k) == v for k, v in filters.items())
-                        if not match:
+                    try:
+                        data = json.loads(line)
+                        if data.get("is_deleted"):
                             continue
-                    count += 1
-                except json.JSONDecodeError:
-                    continue
+                        if filters:
+                            match = all(data.get(k) == v for k, v in filters.items())
+                            if not match:
+                                continue
+                        count += 1
+                    except json.JSONDecodeError:
+                        continue
 
         return count
 
@@ -245,22 +257,24 @@ class LocalStorage(StorageBackend):
         if not path.exists():
             return
 
-        async with aiofiles.open(path, mode='r', encoding='utf-8') as f:
-            async for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                    if data.get("is_deleted"):
+        # Use read lock for consistency during concurrent writes
+        async with self._get_lock():
+            async with aiofiles.open(path, mode='r', encoding='utf-8') as f:
+                async for line in f:
+                    line = line.strip()
+                    if not line:
                         continue
-                    if filters:
-                        match = all(data.get(k) == v for k, v in filters.items())
-                        if not match:
+                    try:
+                        data = json.loads(line)
+                        if data.get("is_deleted"):
                             continue
-                    yield data
-                except json.JSONDecodeError:
-                    continue
+                        if filters:
+                            match = all(data.get(k) == v for k, v in filters.items())
+                            if not match:
+                                continue
+                        yield data
+                    except json.JSONDecodeError:
+                        continue
 
     async def save_version(
         self,
@@ -282,7 +296,7 @@ class LocalStorage(StorageBackend):
         version_data["version_number"] = current_version + 1
         version_data["versioned_at"] = datetime.now().isoformat()
 
-        async with self._lock:
+        async with self._get_lock():
             async with aiofiles.open(version_path, mode='a', encoding='utf-8') as f:
                 await f.write(json.dumps(version_data, ensure_ascii=False) + '\n')
 
@@ -300,10 +314,12 @@ class LocalStorage(StorageBackend):
             return []
 
         versions = []
-        async with aiofiles.open(version_path, mode='r', encoding='utf-8') as f:
-            async for line in f:
-                line = line.strip()
-                if line:
-                    versions.append(json.loads(line))
+        # Use read lock for consistency during concurrent writes
+        async with self._get_lock():
+            async with aiofiles.open(version_path, mode='r', encoding='utf-8') as f:
+                async for line in f:
+                    line = line.strip()
+                    if line:
+                        versions.append(json.loads(line))
 
         return versions

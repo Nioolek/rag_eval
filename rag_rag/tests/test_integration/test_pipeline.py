@@ -6,7 +6,7 @@ import pytest
 import asyncio
 
 from rag_rag.graph.state import RAGState, create_initial_state
-from rag_rag.graph.graph import build_rag_graph, compile_rag_graph, run_rag_pipeline
+from rag_rag.graph.graph import build_rag_graph, compile_rag_graph, run_rag_pipeline, stream_rag_pipeline
 
 
 class TestRAGPipeline:

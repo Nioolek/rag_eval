@@ -25,7 +25,13 @@ class SQLiteStorage(StorageBackend):
     def __init__(self, database_url: str):
         self.database_url = database_url
         self._db: Optional[aiosqlite.Connection] = None
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None  # Lazy-initialized lock
+
+    def _get_lock(self) -> asyncio.Lock:
+        """Get or create the lock (lazy initialization)."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     async def initialize(self) -> None:
         """Initialize database connection and create tables."""
@@ -102,7 +108,7 @@ class SQLiteStorage(StorageBackend):
 
         now = datetime.now().isoformat()
 
-        async with self._lock:
+        async with self._get_lock():
             await self._db.execute(
                 """
                 INSERT INTO records (id, collection, data, created_at, updated_at)
@@ -117,7 +123,7 @@ class SQLiteStorage(StorageBackend):
 
     async def get(self, collection: str, record_id: str) -> Optional[dict[str, Any]]:
         """Get a record by ID."""
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 SELECT data FROM records
@@ -151,7 +157,7 @@ class SQLiteStorage(StorageBackend):
         query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(query, params)
             rows = await cursor.fetchall()
 
@@ -185,7 +191,7 @@ class SQLiteStorage(StorageBackend):
         existing.update(data)
         now = datetime.now().isoformat()
 
-        async with self._lock:
+        async with self._get_lock():
             await self._db.execute(
                 """
                 UPDATE records SET data = ?, updated_at = ?
@@ -199,7 +205,7 @@ class SQLiteStorage(StorageBackend):
 
     async def delete(self, collection: str, record_id: str) -> bool:
         """Soft delete a record."""
-        async with self._lock:
+        async with self._get_lock():
             await self._db.execute(
                 """
                 UPDATE records SET is_deleted = 1, updated_at = ?
@@ -218,7 +224,7 @@ class SQLiteStorage(StorageBackend):
     ) -> int:
         """Count records in collection."""
         if not filters:
-            async with self._lock:
+            async with self._get_lock():
                 cursor = await self._db.execute(
                     """
                     SELECT COUNT(*) as cnt FROM records
@@ -260,7 +266,7 @@ class SQLiteStorage(StorageBackend):
     ) -> int:
         """Save a version snapshot."""
         # Get current max version
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 SELECT MAX(version_number) as max_ver FROM versions
@@ -291,7 +297,7 @@ class SQLiteStorage(StorageBackend):
         record_id: str
     ) -> list[dict[str, Any]]:
         """Get all versions of a record."""
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 SELECT version_number, data, versioned_at FROM versions

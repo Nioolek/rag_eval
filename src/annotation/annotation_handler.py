@@ -5,6 +5,7 @@ Implements Template Method pattern for standardized operations.
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Optional
@@ -334,13 +335,33 @@ class AnnotationHandler(BaseAnnotationHandler):
 
 # Singleton handler instance
 _handler_instance: Optional[AnnotationHandler] = None
+_handler_lock: Optional[asyncio.Lock] = None  # Lazy-initialized lock
+
+
+def _get_handler_lock() -> asyncio.Lock:
+    """Get or create the handler lock (lazy initialization)."""
+    global _handler_lock
+    if _handler_lock is None:
+        _handler_lock = asyncio.Lock()
+    return _handler_lock
 
 
 async def get_annotation_handler() -> AnnotationHandler:
-    """Get singleton annotation handler instance."""
+    """
+    Get singleton annotation handler instance.
+    Thread-safe for concurrent access.
+    """
     global _handler_instance
 
-    if _handler_instance is None:
+    if _handler_instance is not None:
+        return _handler_instance
+
+    # Use lock for thread-safe singleton initialization
+    async with _get_handler_lock():
+        # Double-check after acquiring lock
+        if _handler_instance is not None:
+            return _handler_instance
+
         storage = await get_storage()
         _handler_instance = AnnotationHandler(storage)
 

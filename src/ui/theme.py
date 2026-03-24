@@ -9,88 +9,37 @@ import gradio as gr
 def create_modern_theme() -> gr.themes.Base:
     """
     Create a custom modern theme with professional color scheme.
-    
+
     Returns:
         Customized Gradio Soft theme
     """
     # Base theme: Soft (clean and modern)
+    # Gradio 6.x uses different theme parameters
     theme = gr.themes.Soft(
-        # Primary colors - Professional Blue
         primary_hue="blue",
-        # Secondary colors - Neutral Gray
         neutral_hue="slate",
-        # Accent colors
-        success_hue="emerald",
-        warning_hue="amber",
-        error_hue="rose",
     )
-    
-    # Customize theme properties
-    theme.set(
-        # Colors - Custom palette
-        button_primary_background_fill="#3B82F6",
-        button_primary_background_fill_hover="#2563EB",
-        button_primary_text_color="white",
-        
-        button_secondary_background_fill="white",
-        button_secondary_background_fill_hover="#F3F4F6",
-        button_secondary_border_color="#D1D5DB",
-        button_secondary_text_color="#374151",
-        
-        button_cancel_background_fill="#EF4444",
-        button_cancel_background_fill_hover="#DC2626",
-        button_cancel_text_color="white",
-        
-        # Body and background
-        body_background_fill="#F9FAFB",
-        body_background_fill_dark="#111827",
-        block_background_fill="white",
-        block_background_fill_dark="#1F2937",
-        
-        # Borders
-        block_border="#E5E7EB",
-        block_border_dark="#374151",
-        
-        # Typography
-        body_text_color="#1F2937",
-        body_text_color_dark="#F9FAFB",
-        body_text_size="14px",
-        
-        # Spacing and radius
-        block_radius="8px",
-        button_radius="6px",
-        input_radius="6px",
-        
-        # Shadows
-        block_shadow="0 1px 3px rgba(0, 0, 0, 0.1)",
-        button_shadow="0 1px 2px rgba(0, 0, 0, 0.05)",
-        button_shadow_active="0 1px 2px rgba(0, 0, 0, 0.1)",
-        button_shadow_hover="0 4px 6px rgba(0, 0, 0, 0.1)",
-        
-        # Input styling
-        input_background_fill="white",
-        input_background_fill_dark="#1F2937",
-        input_border_color="#D1D5DB",
-        input_border_color_dark="#4B5563",
-        input_border_color_focus="#3B82F6",
-        
-        # Table/Dataframe
-        table_border_color="#E5E7EB",
-        table_even_background_fill="#F9FAFB",
-        table_odd_background_fill="white",
-        
-        # Tabs
-        tab_background_fill="transparent",
-        tab_background_fill_selected="white",
-        tab_border_color="#E5E7EB",
-        tab_text_color="#6B7280",
-        tab_text_color_selected="#1F2937",
-        
-        # Links
-        link_text_color="#3B82F6",
-        link_text_color_hover="#2563EB",
-    )
-    
+
+    # Apply only the properties supported by Gradio 6.x
+    try:
+        theme.set(
+            # Button styling
+            button_primary_background_fill="#3B82F6",
+            button_primary_background_fill_hover="#2563EB",
+            button_primary_text_color="white",
+            # Body background
+            body_background_fill="#F9FAFB",
+            block_background_fill="white",
+            # Typography
+            body_text_color="#1F2937",
+            # Spacing
+            block_radius="8px",
+            button_radius="6px",
+        )
+    except TypeError:
+        # If theme.set doesn't work, just return the base theme
+        pass
+
     return theme
 
 
@@ -436,15 +385,15 @@ select:focus {
     .gradio-container {
         padding: 10px !important;
     }
-    
+
     .app-header {
         padding: 16px 20px !important;
     }
-    
+
     .app-header h1 {
         font-size: 22px !important;
     }
-    
+
     .stat-card .stat-value {
         font-size: 24px;
     }

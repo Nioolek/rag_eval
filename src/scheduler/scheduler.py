@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.jobstores.sqlite import SQLiteJobStore
+from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.triggers.cron import CronTrigger
 
 from .models import EvaluationTask, ScheduledTask, TaskStatus
@@ -39,9 +39,11 @@ class TaskScheduler:
         self.db_path = db_path
         self.timezone = timezone
         
-        # Configure APScheduler with SQLite job store
+        # Configure APScheduler with memory job store
+        # Note: Using MemoryJobStore for simplicity. For persistence,
+        # install SQLAlchemy and use SQLAlchemyJobStore with SQLite URL
         jobstores = {
-            "default": SQLiteJobStore(db_path=db_path)
+            "default": MemoryJobStore()
         }
         
         self._scheduler = AsyncIOScheduler(

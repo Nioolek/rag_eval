@@ -5,6 +5,7 @@ Whoosh-based fulltext search with BM25 ranking.
 """
 
 import asyncio
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Optional
@@ -16,13 +17,57 @@ from rag_rag.core.logging import get_logger
 logger = get_logger("rag_rag.storage.fulltext")
 
 
+# Regex pattern: match English words/numbers OR individual Chinese characters
+CHINESE_PATTERN = re.compile(r'[a-zA-Z0-9]+|[\u4e00-\u9fff]')
+
+
+class ChineseTokenizer:
+    """
+    Tokenizer for Chinese text that splits Chinese characters individually
+    while keeping English words intact.
+    """
+
+    def __init__(self, expression=None):
+        self.expression = expression or CHINESE_PATTERN
+
+    def __call__(self, value: str, positions: bool = False, chars: bool = False,
+                 keeporiginal: bool = False, removestops: bool = True,
+                 start_pos: int = 0, start_char: int = 0, mode: str = '',
+                 **kwargs) -> Any:
+        """
+        Tokenize the input text.
+
+        Returns an iterator of Token objects compatible with Whoosh.
+        """
+        from whoosh.analysis import Token
+
+        pos = start_pos
+        off = start_char
+
+        for match in self.expression.finditer(value):
+            text = match.group()
+
+            t = Token(positions=positions, chars=chars, removestops=removestops)
+            t.text = text.lower()  # Lowercase for case-insensitive matching
+            t.stopped = False
+
+            if positions:
+                t.pos = pos
+                pos += 1
+            if chars:
+                t.startchar = match.start()
+                t.endchar = match.end()
+
+            yield t
+
+
 class FulltextStore(RetrievableStore):
     """
     Fulltext Store with Whoosh backend.
 
     Features:
     - BM25 ranking
-    - Chinese text support
+    - Chinese text support with character-level tokenization
     - Field-based search
     """
 
@@ -44,17 +89,15 @@ class FulltextStore(RetrievableStore):
         try:
             from whoosh.index import create_in, exists_in, open_dir
             from whoosh.fields import Schema, TEXT, ID, STORED
-            from whoosh.analysis import StemmingAnalyzer, SimpleAnalyzer
 
             # Ensure directory exists
             self.index_dir.mkdir(parents=True, exist_ok=True)
 
-            # Define schema
-            # Use SimpleAnalyzer for Chinese support (no stemming)
+            # Define schema with Chinese tokenizer
             schema = Schema(
                 document_id=ID(stored=True, unique=True),
-                content=TEXT(stored=True, analyzer=SimpleAnalyzer()),
-                title=TEXT(stored=True),
+                content=TEXT(stored=True, analyzer=ChineseTokenizer()),
+                title=TEXT(stored=True, analyzer=ChineseTokenizer()),
                 category=ID(stored=True),
                 metadata=STORED,
             )
@@ -166,21 +209,23 @@ class FulltextStore(RetrievableStore):
         if self._index is None:
             raise FulltextStoreError("Store not initialized")
 
-        from whoosh.qparser import QueryParser, MultifieldParser
+        from whoosh.qparser import QueryParser, MultifieldParser, OrGroup
         import json
 
         # Create searcher
         searcher = self._index.searcher()
 
         try:
-            # Parse query
             search_fields = fields or ["content", "title"]
-            if len(search_fields) == 1:
-                parser = QueryParser(search_fields[0], self._index.schema)
-            else:
-                parser = MultifieldParser(search_fields, self._index.schema)
 
-            parsed_query = parser.parse(query)
+            # Use OR group for matching any term
+            if len(search_fields) == 1:
+                parser = QueryParser(search_fields[0], self._index.schema, group=OrGroup)
+            else:
+                parser = MultifieldParser(search_fields, self._index.schema, group=OrGroup)
+
+            # Lowercase the query for case-insensitive matching
+            parsed_query = parser.parse(query.lower())
 
             # Execute search
             results = searcher.search(parsed_query, limit=top_k)

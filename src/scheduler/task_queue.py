@@ -19,19 +19,25 @@ from ..core.exceptions import TaskError
 class TaskQueue:
     """
     SQLite-backed task queue with row-level locking.
-    
+
     Features:
     - Async operations
     - Row-level locking for concurrent workers
     - Heartbeat-based stale task detection
     - Priority-based task ordering
     """
-    
+
     def __init__(self, db_path: str = "./data/scheduler.db"):
         self.db_path = Path(db_path)
         self._db: Optional[aiosqlite.Connection] = None
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None  # Lazy-initialized lock
         self._worker_id: str = f"worker_{id(self)}"
+
+    def _get_lock(self) -> asyncio.Lock:
+        """Get or create the lock (lazy initialization)."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
     
     async def initialize(self) -> None:
         """Initialize database connection and create tables."""
@@ -179,7 +185,7 @@ class TaskQueue:
     
     async def add_task(self, task: EvaluationTask) -> str:
         """Add a new task to the queue."""
-        async with self._lock:
+        async with self._get_lock():
             await self._db.execute(
                 """
                 INSERT INTO evaluation_tasks (
@@ -212,7 +218,7 @@ class TaskQueue:
         
         Returns None if task cannot be claimed (already claimed or not pending).
         """
-        async with self._lock:
+        async with self._get_lock():
             # Try to claim the task atomically
             cursor = await self._db.execute(
                 """
@@ -246,7 +252,7 @@ class TaskQueue:
         Get the next pending task ordered by priority and creation time.
         Does not claim the task - use claim_task() for that.
         """
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 SELECT * FROM evaluation_tasks
@@ -263,7 +269,7 @@ class TaskQueue:
     
     async def start_task(self, task_id: str) -> bool:
         """Mark a claimed task as running."""
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 UPDATE evaluation_tasks
@@ -285,7 +291,7 @@ class TaskQueue:
     
     async def complete_task(self, task_id: str) -> bool:
         """Mark a running task as completed."""
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 UPDATE evaluation_tasks
@@ -308,7 +314,7 @@ class TaskQueue:
     
     async def fail_task(self, task_id: str, error: str) -> bool:
         """Mark a running task as failed."""
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 UPDATE evaluation_tasks
@@ -334,7 +340,7 @@ class TaskQueue:
     
     async def cancel_task(self, task_id: str) -> bool:
         """Cancel a task (any status)."""
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 UPDATE evaluation_tasks
@@ -356,7 +362,7 @@ class TaskQueue:
     
     async def heartbeat(self, task_id: str) -> bool:
         """Update heartbeat timestamp for a running task."""
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 UPDATE evaluation_tasks
@@ -377,7 +383,7 @@ class TaskQueue:
         """
         cutoff = (datetime.now() - timedelta(seconds=timeout_seconds)).isoformat()
         
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 UPDATE evaluation_tasks
@@ -400,7 +406,7 @@ class TaskQueue:
     
     async def get_task(self, task_id: str) -> Optional[EvaluationTask]:
         """Get a task by ID."""
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 SELECT * FROM evaluation_tasks
@@ -421,7 +427,7 @@ class TaskQueue:
         offset: int = 0,
     ) -> list[EvaluationTask]:
         """Get tasks by status."""
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 SELECT * FROM evaluation_tasks
@@ -437,7 +443,7 @@ class TaskQueue:
     
     async def get_pending_task_count(self) -> int:
         """Get count of pending tasks."""
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 SELECT COUNT(*) as cnt FROM evaluation_tasks
@@ -450,7 +456,7 @@ class TaskQueue:
     
     async def delete_task(self, task_id: str) -> bool:
         """Soft delete a task."""
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 UPDATE evaluation_tasks
@@ -467,7 +473,7 @@ class TaskQueue:
     
     async def add_scheduled_task(self, scheduled: "ScheduledTask") -> str:
         """Add a scheduled task configuration."""
-        async with self._lock:
+        async with self._get_lock():
             await self._db.execute(
                 """
                 INSERT INTO scheduled_tasks (
@@ -496,7 +502,7 @@ class TaskQueue:
         # Import here to avoid circular dependency
         from .models import ScheduledTask
         
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 SELECT * FROM scheduled_tasks
@@ -517,7 +523,7 @@ class TaskQueue:
         """Get all enabled scheduled tasks."""
         from .models import ScheduledTask
         
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 """
                 SELECT * FROM scheduled_tasks
@@ -544,7 +550,7 @@ class TaskQueue:
         next_run_at: Optional[datetime] = None,
     ) -> None:
         """Update scheduled task after a run."""
-        async with self._lock:
+        async with self._get_lock():
             await self._db.execute(
                 """
                 UPDATE scheduled_tasks
@@ -566,7 +572,7 @@ class TaskQueue:
     
     async def delete_scheduled_task(self, task_id: str) -> bool:
         """Delete a scheduled task."""
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(
                 "DELETE FROM scheduled_tasks WHERE id = ?",
                 (task_id,)
@@ -579,7 +585,7 @@ class TaskQueue:
     
     async def save_benchmark(self, benchmark: "PerformanceBenchmark") -> str:
         """Save a performance benchmark result."""
-        async with self._lock:
+        async with self._get_lock():
             await self._db.execute(
                 """
                 INSERT INTO performance_benchmarks (
@@ -634,7 +640,7 @@ class TaskQueue:
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         
-        async with self._lock:
+        async with self._get_lock():
             cursor = await self._db.execute(query, params)
             rows = await cursor.fetchall()
         

@@ -23,7 +23,7 @@ class EmbeddingConfig:
     api_key: str = ""
     model: str = "text-embedding-v3"
     dimension: int = 1024
-    batch_size: int = 20
+    batch_size: int = 10  # DashScope max batch size is 10
     timeout: int = 30
     max_retries: int = 3
     retry_delay: float = 0.5
@@ -112,10 +112,24 @@ class EmbeddingService:
                         f"Embedding API error: {response.code} - {response.message}"
                     )
 
-                # Extract embeddings
-                batch_embeddings = [
-                    item.embedding for item in response.output["embeddings"]
-                ]
+                # Extract embeddings - handle both response formats
+                # Format 1: response.output["embeddings"] with .embedding attribute
+                # Format 2: response.output["embeddings"] as list of dicts with "embedding" key
+                output_embeddings = response.output.get("embeddings", [])
+
+                batch_embeddings = []
+                for item in output_embeddings:
+                    if hasattr(item, 'embedding'):
+                        # Object format
+                        batch_embeddings.append(item.embedding)
+                    elif isinstance(item, dict) and "embedding" in item:
+                        # Dict format
+                        batch_embeddings.append(item["embedding"])
+                    else:
+                        raise EmbeddingServiceError(
+                            f"Unexpected embedding format: {type(item)}"
+                        )
+
                 all_embeddings.extend(batch_embeddings)
 
             except RateLimitError:

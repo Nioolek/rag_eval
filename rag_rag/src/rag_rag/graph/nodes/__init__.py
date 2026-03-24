@@ -92,38 +92,73 @@ async def faq_match_node(state: RAGState) -> dict[str, Any]:
     """
     from rag_rag.core.config import get_config
     from rag_rag.storage.faq_store import FAQStore
+    from pathlib import Path
 
     query = state["query"]
     config = get_config()
 
-    # Get FAQ store (would be injected in production)
-    # For now, return not matched
-    # In production: faq_store = get_faq_store()
+    # Initialize FAQ store with the data directory
+    # Use lower threshold (0.6) for partial matches
+    data_dir = Path("data")
+    faq_store = FAQStore(
+        db_path=data_dir / "faq.db",
+        match_threshold=0.6,  # Lower threshold for better recall
+    )
+    await faq_store.initialize()
 
-    # Placeholder - would use actual FAQ store
-    faq_matched = False
-    faq_result = None
+    try:
+        # Try multiple search strategies
+        results = []
 
-    # Check if query matches any FAQ (simplified)
-    # In production: search FAQ store with hybrid search
-    # results = await faq_store.search(query, top_k=1, search_type="hybrid")
-    # if results and results[0]["score"] >= config.faq.match_threshold:
-    #     faq_matched = True
-    #     faq_result = {
-    #         "matched": True,
-    #         "faq_id": results[0]["id"],
-    #         "question": results[0]["question"],
-    #         "answer": results[0]["answer"],
-    #         "confidence": results[0]["score"],
-    #         "similarity": results[0].get("similarity", 0),
-    #         "match_type": results[0].get("match_type", "semantic"),
-    #         "timing_ms": 0,
-    #     }
+        # Strategy 1: Exact search with full query
+        results = await faq_store.search(query, top_k=1, search_type="exact")
 
-    return {
-        "faq_matched": faq_matched,
-        "faq_result": faq_result,
-    }
+        # Strategy 2: If no results, try with first significant word
+        if not results:
+            # Split query into words and use the most significant one
+            words = query.split()
+            for word in words:
+                if len(word) >= 2:  # Skip single characters
+                    results = await faq_store.search(word, top_k=1, search_type="exact")
+                    if results:
+                        break
+
+        # Strategy 3: Try Chinese character matching for combined queries
+        if not results and len(query) >= 2:
+            # Extract Chinese characters and try matching
+            import re
+            chinese_chars = re.findall(r'[\u4e00-\u9fff]+', query)
+            for chars in chinese_chars:
+                if len(chars) >= 2:
+                    results = await faq_store.search(chars, top_k=1, search_type="exact")
+                    if results:
+                        break
+
+        faq_matched = False
+        faq_result = None
+
+        # Use 0.6 threshold for matching
+        threshold = 0.6
+        if results and results[0].get("score", 0) >= threshold:
+            faq_matched = True
+            top_result = results[0]
+            faq_result = {
+                "matched": True,
+                "faq_id": top_result.get("id", ""),
+                "question": top_result.get("question", ""),
+                "answer": top_result.get("answer", ""),
+                "confidence": top_result.get("score", 0),
+                "similarity": top_result.get("similarity", 0),
+                "match_type": top_result.get("match_type", "semantic"),
+                "timing_ms": 0,
+            }
+
+        return {
+            "faq_matched": faq_matched,
+            "faq_result": faq_result,
+        }
+    finally:
+        await faq_store.close()
 
 
 @node_decorator("query_rewrite")
@@ -173,24 +208,68 @@ async def vector_retrieve_node(state: RAGState) -> dict[str, Any]:
     """
     Vector retrieval node.
 
-    - Embed query
+    - Embed query using DashScope embedding service
     - Search Chroma for similar documents
     """
     from rag_rag.core.config import get_config
+    from rag_rag.storage.vector_store import VectorStore
+    from rag_rag.services.embedding_service import EmbeddingService, EmbeddingConfig
+    from pathlib import Path
+    import os
 
     query = state.get("rewritten_query") or state["query"]
     config = get_config()
 
-    # Get vector store (would be injected in production)
-    # In production: vector_store = get_vector_store()
-    # results = await vector_store.search(query, top_k=config.retrieval.vector_top_k)
+    # Initialize vector store
+    data_dir = Path("data")
+    vector_store = VectorStore(
+        persist_dir=data_dir / "chroma",
+        collection_name="electronics_docs",
+        embedding_dimension=1024,
+    )
+    await vector_store.initialize()
 
-    # Placeholder - return empty results
-    vector_results = []
+    try:
+        # Check if we have a valid embedding API key
+        api_key = os.environ.get("DASHSCOPE_API_KEY", "")
+        if api_key and api_key != "sk-placeholder-key":
+            # Use real embedding service
+            embedding_service = EmbeddingService(EmbeddingConfig(
+                api_key=api_key,
+                model="text-embedding-v3",
+                dimension=1024,
+            ))
+            await embedding_service.initialize()
 
-    return {
-        "vector_results": vector_results,
-    }
+            # Get query embedding
+            query_embedding = await embedding_service.embed_single(query)
+
+            # Search vector store
+            top_k = config.retrieval.vector_top_k if hasattr(config, 'retrieval') else 20
+            results = await vector_store.search(query_embedding, top_k=top_k)
+
+            # Format results
+            vector_results = []
+            for result in results:
+                vector_results.append({
+                    "document_id": result.get("document_id", ""),
+                    "content": result.get("content", ""),
+                    "score": result.get("score", 0),
+                    "source": "vector",
+                    "metadata": result.get("metadata", {}),
+                })
+
+            await embedding_service.close()
+        else:
+            # No valid API key - return empty results
+            logger.warning("No valid DASHSCOPE_API_KEY - vector retrieval disabled")
+            vector_results = []
+
+        return {
+            "vector_results": vector_results,
+        }
+    finally:
+        await vector_store.close()
 
 
 @node_decorator("fulltext_retrieve")
@@ -201,20 +280,43 @@ async def fulltext_retrieve_node(state: RAGState) -> dict[str, Any]:
     - BM25 search with Whoosh
     """
     from rag_rag.core.config import get_config
+    from rag_rag.storage.fulltext_store import FulltextStore
+    from pathlib import Path
 
     query = state.get("rewritten_query") or state["query"]
     config = get_config()
 
-    # Get fulltext store (would be injected in production)
-    # In production: fulltext_store = get_fulltext_store()
-    # results = await fulltext_store.search(query, top_k=config.retrieval.fulltext_top_k)
+    # Initialize fulltext store
+    data_dir = Path("data")
+    fulltext_store = FulltextStore(
+        index_dir=data_dir / "whoosh",
+        index_name="electronics_docs",
+    )
+    await fulltext_store.initialize()
 
-    # Placeholder - return empty results
-    fulltext_results = []
+    try:
+        # Get top_k from config or use default
+        top_k = config.retrieval.fulltext_top_k if hasattr(config, 'retrieval') and hasattr(config.retrieval, 'fulltext_top_k') else 10
 
-    return {
-        "fulltext_results": fulltext_results,
-    }
+        # Search fulltext store
+        results = await fulltext_store.search(query, top_k=top_k)
+
+        # Format results for RAGState
+        fulltext_results = []
+        for result in results:
+            fulltext_results.append({
+                "document_id": result.get("document_id", ""),
+                "content": result.get("content", ""),
+                "score": result.get("score", 0),
+                "source": "fulltext",
+                "metadata": result.get("metadata", {}),
+            })
+
+        return {
+            "fulltext_results": fulltext_results,
+        }
+    finally:
+        await fulltext_store.close()
 
 
 @node_decorator("graph_retrieve")
@@ -494,29 +596,64 @@ async def generate_node(state: RAGState) -> dict[str, Any]:
     - Extract thinking process if enabled
     """
     from rag_rag.services.llm_service import LLMService, LLMConfig
+    import os
 
     system_prompt = state.get("system_prompt", "")
     final_prompt = state.get("final_prompt", "")
     enable_thinking = state.get("enable_thinking", False)
 
-    # Get LLM service (would be injected in production)
-    # In production: llm_service = get_llm_service()
-    # output = await llm_service.generate(
-    #     system_prompt=system_prompt,
-    #     user_prompt=final_prompt,
-    #     enable_thinking=enable_thinking,
-    # )
+    # Check if we have a valid API key
+    api_key = os.environ.get("DASHSCOPE_API_KEY", "")
+    if api_key and api_key != "sk-placeholder-key":
+        # Use real LLM service
+        llm_service = LLMService(LLMConfig(
+            api_key=api_key,
+            model="qwen-plus",
+            temperature=0.7,
+            max_tokens=2048,
+        ))
 
-    # Placeholder
-    llm_output = {
-        "content": "这是一个示例回答。在生产环境中，这将由LLM生成。",
-        "thinking_process": "",
-        "token_usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
-        "model": "qwen-plus",
-        "finish_reason": "stop",
-    }
+        try:
+            output = await llm_service.generate(
+                system_prompt=system_prompt,
+                user_prompt=final_prompt,
+                enable_thinking=enable_thinking,
+            )
 
-    final_answer = llm_output.get("content", "")
+            llm_output = {
+                "content": output.content,
+                "thinking_process": output.thinking_process,
+                "token_usage": output.token_usage,
+                "model": output.model,
+                "finish_reason": output.finish_reason,
+            }
+
+            final_answer = output.content
+
+        except Exception as e:
+            logger.error(f"LLM generation failed: {e}")
+            llm_output = {
+                "content": f"抱歉，生成回答时发生错误: {str(e)}",
+                "thinking_process": "",
+                "token_usage": {},
+                "model": "error",
+                "finish_reason": "error",
+            }
+            final_answer = llm_output["content"]
+
+        finally:
+            await llm_service.close()
+    else:
+        # No valid API key - return placeholder
+        logger.warning("No valid DASHSCOPE_API_KEY - LLM generation disabled")
+        llm_output = {
+            "content": "这是一个示例回答。在生产环境中，这将由LLM生成。",
+            "thinking_process": "",
+            "token_usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+            "model": "placeholder",
+            "finish_reason": "placeholder",
+        }
+        final_answer = llm_output.get("content", "")
 
     return {
         "llm_output": llm_output,

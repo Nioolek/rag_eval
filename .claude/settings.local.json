@@ -2,7 +2,29 @@
   "permissions": {
     "allow": [
       "Bash(python -m pytest tests/ -v --tb=short)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(python -m src.main --help)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(python scripts/test_pipeline.py)",
+      "Bash(python scripts/generate_electronics_data.py --faqs 500 --docs 200)",
+      "Bash(python scripts/ingest_electronics_data.py --data-dir data)",
+      "Bash(python -c \":*)",
+      "Bash(langgraph --version)",
+      "Bash(timeout 30 langgraph dev --port 8123 --no-browser)",
+      "Bash(timeout 60 langgraph dev --port 8123 --no-browser)",
+      "Bash(export DASHSCOPE_API_KEY=\"sk-82299b4ade1e4eed98b6ef208d1614b7\")",
+      "Bash(python scripts/ingest_electronics_data.py --generate --faqs 100 --docs 50)",
+      "Bash(python -c \"from src.core.exceptions import TaskError; print\\(''TaskError imported successfully''\\)\")",
+      "Bash(python -m pytest tests/test_e2e.py::TestStreamingPipeline::test_stream_pipeline_complete_flow -v --tb=long)",
+      "Bash(python -m pytest tests/ --tb=short)",
+      "Bash(python -m pytest tests/ --cov=src/rag_rag --cov-report=term-missing)",
+      "Bash(python -c \"from src.ui.app import create_app; print\\(''Import successful''\\)\")",
+      "Bash(pip show:*)",
+      "Bash(python:*)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill //F //IM python.exe)"
     ]
   }
 }

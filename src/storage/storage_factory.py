@@ -3,6 +3,7 @@ Storage factory using Factory pattern.
 Creates appropriate storage backend based on configuration.
 """
 
+import asyncio
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -22,6 +23,14 @@ class StorageFactory:
     """
 
     _instances: dict[str, StorageBackend] = {}
+    _lock: Optional[asyncio.Lock] = None  # Lazy-initialized lock
+
+    @classmethod
+    def _get_lock(cls) -> asyncio.Lock:
+        """Get or create the lock (lazy initialization)."""
+        if cls._lock is None:
+            cls._lock = asyncio.Lock()
+        return cls._lock
 
     @classmethod
     async def create(
@@ -55,29 +64,35 @@ class StorageFactory:
         if cache_key in cls._instances:
             return cls._instances[cache_key]
 
-        # Create new instance
-        if storage_type == "local":
-            storage = LocalStorage(
-                data_dir=data_dir,
-                chunk_size=chunk_size
-            )
-        elif storage_type == "sqlite":
-            if not database_url:
-                # Default SQLite path
-                database_url = f"sqlite:///{data_dir}/rag_eval.db"
-            storage = SQLiteStorage(database_url=database_url)
-        else:
-            raise ConfigurationError(
-                f"Unknown storage type: {storage_type}. "
-                "Supported types: 'local', 'sqlite'"
-            )
+        # Use lock for thread-safe singleton initialization
+        async with cls._get_lock():
+            # Double-check after acquiring lock
+            if cache_key in cls._instances:
+                return cls._instances[cache_key]
 
-        # Initialize storage
-        await storage.initialize()
-        cls._instances[cache_key] = storage
+            # Create new instance
+            if storage_type == "local":
+                storage = LocalStorage(
+                    data_dir=data_dir,
+                    chunk_size=chunk_size
+                )
+            elif storage_type == "sqlite":
+                if not database_url:
+                    # Default SQLite path
+                    database_url = f"sqlite:///{data_dir}/rag_eval.db"
+                storage = SQLiteStorage(database_url=database_url)
+            else:
+                raise ConfigurationError(
+                    f"Unknown storage type: {storage_type}. "
+                    "Supported types: 'local', 'sqlite'"
+                )
 
-        logger.info(f"Created {storage_type} storage backend")
-        return storage
+            # Initialize storage
+            await storage.initialize()
+            cls._instances[cache_key] = storage
+
+            logger.info(f"Created {storage_type} storage backend")
+            return storage
 
     @classmethod
     async def close_all(cls) -> None:
@@ -95,16 +110,34 @@ class StorageFactory:
 
 # Singleton storage instance
 _storage_instance: Optional[StorageBackend] = None
+_storage_lock: Optional[asyncio.Lock] = None  # Lazy-initialized lock
+
+
+def _get_storage_lock() -> asyncio.Lock:
+    """Get or create the storage lock (lazy initialization)."""
+    global _storage_lock
+    if _storage_lock is None:
+        _storage_lock = asyncio.Lock()
+    return _storage_lock
 
 
 async def get_storage() -> StorageBackend:
     """
     Get the singleton storage instance.
     Creates the instance if not exists.
+    Thread-safe for concurrent access.
     """
     global _storage_instance
 
-    if _storage_instance is None:
+    if _storage_instance is not None:
+        return _storage_instance
+
+    # Use lock for thread-safe singleton initialization
+    async with _get_storage_lock():
+        # Double-check after acquiring lock
+        if _storage_instance is not None:
+            return _storage_instance
+
         config = get_config()
         _storage_instance = await StorageFactory.create(
             storage_type=config.storage.storage_type,

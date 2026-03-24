@@ -12,7 +12,12 @@ T = TypeVar('T')
 def run_async(coro: Coroutine[Any, Any, T]) -> T:
     """
     Run an async coroutine in a sync context.
-    Handles both existing event loop and no event loop cases.
+
+    For Gradio 6.x, this function should NOT be used directly.
+    Instead, define event handlers as async functions directly.
+
+    This is kept for backwards compatibility but will raise an error
+    if called from within Gradio's event loop.
     """
     try:
         loop = asyncio.get_running_loop()
@@ -20,11 +25,12 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
         loop = None
 
     if loop and loop.is_running():
-        # Already in an async context, create task
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(asyncio.run, coro)
-            return future.result()
+        # In Gradio's async context, we should not block
+        # Return a placeholder or raise an error
+        raise RuntimeError(
+            "run_async() should not be called from Gradio event handlers. "
+            "Define your event handler as an async function directly."
+        )
     else:
         return asyncio.run(coro)
 
@@ -32,6 +38,9 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
 def async_to_sync(func: Callable[..., Coroutine[Any, Any, T]]) -> Callable[..., T]:
     """
     Decorator to convert async function to sync function.
+
+    WARNING: This should not be used for Gradio event handlers.
+    Use async functions directly instead.
     """
     @wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> T:
