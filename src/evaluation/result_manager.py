@@ -139,46 +139,65 @@ class ResultManager:
     async def get_results_by_run(
         self,
         run_id: str,
+        filters: Optional[dict[str, Any]] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> list[EvaluationResult]:
+    ) -> tuple[list[EvaluationResult], int]:
         """
-        Get all results for a specific run.
+        Get all results for a specific run with pagination.
 
         Args:
             run_id: Run ID
+            filters: Optional filters (e.g., {"rag_interface": "mock", "success": True})
             limit: Maximum results to return
             offset: Number to skip
 
         Returns:
-            List of EvaluationResult
+            Tuple of (List of EvaluationResult, total count)
         """
         # First try to get from evaluation_results collection
         results_data = await self.storage.get_all(
             self.COLLECTION,
-            filters={"run_id": run_id},
+            filters={"run_id": run_id, **(filters or {})},
             limit=limit,
             offset=offset,
         )
 
+        # Get total count for pagination
+        total = await self.storage.count(
+            self.COLLECTION,
+            filters={"run_id": run_id, **(filters or {})},
+        )
+
         if results_data:
             logger.debug(f"Found {len(results_data)} results in evaluation_results collection")
-            return [EvaluationResult.from_dict(d) for d in results_data]
+            return [EvaluationResult.from_dict(d) for d in results_data], total
 
         # Fallback: get from the run itself (for legacy data where results are embedded in run)
         logger.debug(f"No results in collection, fetching from run {run_id}")
         run = await self.get_run(run_id)
         if run and run.results:
-            logger.debug(f"Found {len(run.results)} results in run object")
-            return run.results[offset:offset + limit]
+            # Apply filters to legacy data
+            filtered_results = run.results
+            if filters:
+                filtered_results = [
+                    r for r in filtered_results
+                    if all(
+                        getattr(r, k, None) == v or
+                        (isinstance(v, list) and getattr(r, k, None) in v)
+                        for k, v in filters.items()
+                    )
+                ]
+            total = len(filtered_results)
+            return filtered_results[offset:offset + limit], total
 
         logger.warning(f"No results found for run {run_id}")
-        return []
+        return [], 0
 
     async def delete_run(self, run_id: str) -> bool:
         """Delete an evaluation run and its results."""
         # Delete results
-        results = await self.get_results_by_run(run_id, limit=10000)
+        results, _ = await self.get_results_by_run(run_id, limit=10000)
         for result in results:
             await self.storage.delete(self.COLLECTION, result.id)
 
@@ -187,6 +206,56 @@ class ResultManager:
 
         logger.info(f"Deleted evaluation run: {run_id}")
         return True
+
+    async def search_results(
+        self,
+        run_id: str,
+        search_query: str,
+        search_fields: Optional[list[str]] = None,
+        filters: Optional[dict[str, Any]] = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[EvaluationResult], int]:
+        """
+        Search results within a run by text query.
+
+        Args:
+            run_id: Run ID
+            search_query: Text to search for
+            search_fields: Fields to search in (e.g., ["query", "response"])
+            filters: Optional additional filters
+            limit: Maximum results to return
+            offset: Number to skip
+
+        Returns:
+            Tuple of (List of matching EvaluationResult, total count)
+        """
+        # Combine run_id filter with search
+        combined_filters = {"run_id": run_id}
+        if filters:
+            combined_filters.update(filters)
+
+        # Search in storage
+        results_data = await self.storage.search(
+            self.COLLECTION,
+            search_query=search_query,
+            search_fields=search_fields,
+            filters=combined_filters,
+            limit=limit,
+            offset=offset,
+        )
+
+        # Get total count (approximate - search doesn't always provide exact count)
+        # For a more accurate count, we'd need to run a separate count query
+        total = len(results_data)
+        if len(results_data) == limit:
+            # There might be more results
+            total = await self.storage.count(
+                self.COLLECTION,
+                filters=combined_filters,
+            )
+
+        return [EvaluationResult.from_dict(d) for d in results_data], total
 
     async def export_run(
         self,
@@ -209,7 +278,7 @@ class ResultManager:
         if not run:
             raise EvaluationError(f"Run not found: {run_id}")
 
-        results = await self.get_results_by_run(run_id, limit=10000)
+        results, _ = await self.get_results_by_run(run_id, limit=10000)
 
         if output_path is None:
             output_path = Path(f"evaluation_run_{run_id}.{format}")
@@ -405,6 +474,27 @@ class ResultManager:
             return []
 
         return run.get_results_by_tag(tag)
+
+    async def count_results(
+        self,
+        run_id: str,
+        filters: Optional[dict[str, Any]] = None,
+    ) -> int:
+        """
+        Count results for a run with optional filters.
+
+        Args:
+            run_id: Run ID
+            filters: Optional filter conditions
+
+        Returns:
+            Number of matching results
+        """
+        combined_filters = {"run_id": run_id}
+        if filters:
+            combined_filters.update(filters)
+
+        return await self.storage.count(self.COLLECTION, combined_filters)
 
     async def get_all_tags(self, run_id: str) -> dict[str, Any]:
         """

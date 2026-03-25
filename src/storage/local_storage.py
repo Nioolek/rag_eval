@@ -324,3 +324,109 @@ class LocalStorage(StorageBackend):
                         versions.append(json.loads(line))
 
         return versions
+
+    async def query_with_sort(
+        self,
+        collection: str,
+        filters: Optional[dict[str, Any]] = None,
+        sort_by: str = "created_at",
+        sort_desc: bool = True,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """
+        Get records with sorting at the storage level.
+
+        For local file storage, this requires reading all records,
+        sorting in memory, then applying pagination.
+        """
+        # Get all records (no pagination yet)
+        all_records = await self.get_all(
+            collection,
+            filters=filters,
+            limit=100000,  # Large limit for sorting
+            offset=0,
+        )
+
+        # Sort by the specified field
+        def sort_key(record):
+            val = record.get(sort_by) or record.get("_saved_at")
+            if val is None:
+                return (1, "")  # Put None values at the end
+            return (0, val)
+
+        all_records.sort(key=sort_key, reverse=sort_desc)
+
+        # Apply pagination
+        return all_records[offset:offset + limit]
+
+    async def search(
+        self,
+        collection: str,
+        search_query: str,
+        search_fields: Optional[list[str]] = None,
+        filters: Optional[dict[str, Any]] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """
+        Search records by text query.
+
+        Simple case-insensitive substring search.
+        """
+        path = self._get_collection_path(collection)
+
+        if not path.exists():
+            return []
+
+        search_lower = search_query.lower()
+        results = []
+
+        async with self._get_lock():
+            async with aiofiles.open(path, mode='r', encoding='utf-8') as f:
+                async for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+
+                        # Skip deleted records
+                        if data.get("is_deleted"):
+                            continue
+
+                        # Search in specified fields or all string fields
+                        found = False
+                        if search_fields:
+                            for field in search_fields:
+                                field_value = data.get(field, "")
+                                if isinstance(field_value, str) and search_lower in field_value.lower():
+                                    found = True
+                                    break
+                        else:
+                            # Search in all string values
+                            for value in data.values():
+                                if isinstance(value, str) and search_lower in value.lower():
+                                    found = True
+                                    break
+
+                        if not found:
+                            continue
+
+                        # Apply additional filters
+                        if filters:
+                            match = all(
+                                data.get(k) == v or
+                                (isinstance(v, list) and data.get(k) in v)
+                                for k, v in filters.items()
+                            )
+                            if not match:
+                                continue
+
+                        results.append(data)
+
+                    except json.JSONDecodeError:
+                        continue
+
+        # Apply pagination
+        return results[offset:offset + limit]

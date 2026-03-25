@@ -182,3 +182,55 @@ class StorageBackend(ABC):
             List of versions
         """
         pass
+
+    @abstractmethod
+    async def query_with_sort(
+        self,
+        collection: str,
+        filters: Optional[dict[str, Any]] = None,
+        sort_by: str = "created_at",
+        sort_desc: bool = True,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """
+        Get records with sorting at the storage level.
+
+        Args:
+            collection: Collection/table name
+            filters: Optional filter conditions
+            sort_by: Field to sort by
+            sort_desc: Sort descending if True
+            limit: Maximum number of records to return
+            offset: Number of records to skip
+
+        Returns:
+            List of records sorted and paginated
+        """
+        pass
+
+    @abstractmethod
+    async def search(
+        self,
+        collection: str,
+        search_query: str,
+        search_fields: Optional[list[str]] = None,
+        filters: Optional[dict[str, Any]] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """
+        Search records by text query.
+
+        Args:
+            collection: Collection/table name
+            search_query: Text to search for
+            search_fields: Fields to search in (default: all text fields)
+            filters: Optional additional filter conditions
+            limit: Maximum number of records to return
+            offset: Number of records to skip
+
+        Returns:
+            List of matching records
+        """
+        pass

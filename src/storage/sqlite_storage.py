@@ -321,3 +321,131 @@ class SQLiteStorage(StorageBackend):
             versions.append(version_data)
 
         return versions
+
+    async def query_with_sort(
+        self,
+        collection: str,
+        filters: Optional[dict[str, Any]] = None,
+        sort_by: str = "created_at",
+        sort_desc: bool = True,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """
+        Get records with sorting at the storage level.
+
+        For JSON data fields, sorting is done in Python after fetching.
+        For created_at/updated_at, sorting is done at database level.
+        """
+        # Database-level sort fields
+        db_sort_fields = {"created_at", "updated_at"}
+
+        if sort_by in db_sort_fields:
+            # Can sort at database level
+            order = "DESC" if sort_desc else "ASC"
+            query = f"""
+                SELECT data FROM records
+                WHERE collection = ? AND is_deleted = 0
+                ORDER BY {sort_by} {order}
+                LIMIT ? OFFSET ?
+            """
+            params = [collection, limit, offset]
+
+            async with self._get_lock():
+                cursor = await self._db.execute(query, params)
+                rows = await cursor.fetchall()
+
+            results = []
+            for row in rows:
+                data = json.loads(row["data"])
+                if filters:
+                    match = all(
+                        data.get(k) == v or
+                        (isinstance(v, list) and data.get(k) in v)
+                        for k, v in filters.items()
+                    )
+                    if not match:
+                        continue
+                results.append(data)
+
+            return results
+        else:
+            # Need to sort in Python (JSON field)
+            # Fetch all matching records, sort, then paginate
+            all_records = await self.get_all(
+                collection,
+                filters=filters,
+                limit=10000,  # Reasonable limit for in-memory sort
+                offset=0,
+            )
+
+            # Sort by the specified field
+            def sort_key(record):
+                val = record.get(sort_by)
+                if val is None:
+                    return (1, "")  # Put None values at the end
+                return (0, val)
+
+            all_records.sort(key=sort_key, reverse=sort_desc)
+
+            # Apply pagination
+            return all_records[offset:offset + limit]
+
+    async def search(
+        self,
+        collection: str,
+        search_query: str,
+        search_fields: Optional[list[str]] = None,
+        filters: Optional[dict[str, Any]] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """
+        Search records by text query using LIKE pattern.
+
+        This is a simple implementation using SQL LIKE.
+        For better full-text search, consider using FTS5 extension.
+        """
+        search_pattern = f"%{search_query}%"
+
+        # Build query - search in JSON data using LIKE
+        query = """
+            SELECT data FROM records
+            WHERE collection = ? AND is_deleted = 0
+            AND data LIKE ?
+        """
+        params = [collection, search_pattern]
+
+        async with self._get_lock():
+            cursor = await self._db.execute(query, params)
+            rows = await cursor.fetchall()
+
+        results = []
+        for row in rows:
+            data = json.loads(row["data"])
+
+            # Filter by specific fields if provided
+            if search_fields:
+                found = False
+                for field in search_fields:
+                    field_value = data.get(field, "")
+                    if isinstance(field_value, str) and search_query.lower() in field_value.lower():
+                        found = True
+                        break
+                if not found:
+                    continue
+
+            # Apply additional filters
+            if filters:
+                match = all(
+                    data.get(k) == v or
+                    (isinstance(v, list) and data.get(k) in v)
+                    for k, v in filters.items()
+                )
+                if not match:
+                    continue
+
+            results.append(data)
+
+        # Apply pagination
+        return results[offset:offset + limit]

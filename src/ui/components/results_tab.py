@@ -1,6 +1,6 @@
 """
 Results display tab component for Gradio UI.
-Enhanced with modern styling and improved data visualization.
+Enhanced with pagination, search, and optimized data handling.
 """
 
 import asyncio
@@ -17,8 +17,15 @@ from ...rag.langgraph_adapter import LangGraphAdapter
 from ...core.logging import logger
 
 
+# Module-level cache for current page result IDs
+_current_result_ids: list[str] = []
+
+
 def create_results_tab() -> None:
     """Create the results display and analysis tab with enhanced styling."""
+
+    global _current_result_ids
+    _current_result_ids = []
 
     # Header
     gr.Markdown("""
@@ -57,6 +64,7 @@ def create_results_tab() -> None:
                     elem_classes=["placeholder-text"],
                 )
 
+                # Filters row
                 with gr.Row():
                     interface_filter = gr.Dropdown(
                         label="🔌 接口筛选",
@@ -76,6 +84,31 @@ def create_results_tab() -> None:
                         value="全部",
                         scale=1,
                     )
+
+                # Search row
+                with gr.Row():
+                    search_input = gr.Textbox(
+                        label="🔍 搜索查询内容",
+                        placeholder="输入关键词搜索...",
+                        scale=3,
+                    )
+                    search_btn = gr.Button("搜索", variant="primary", scale=1)
+                    clear_search_btn = gr.Button("清除", scale=1)
+
+                # Pagination controls
+                with gr.Row():
+                    page_size = gr.Dropdown(
+                        choices=[10, 20, 50, 100],
+                        value=20,
+                        label="每页显示",
+                        scale=1,
+                    )
+                    page_num = gr.Number(value=1, label="页码", precision=0, scale=1)
+
+                with gr.Row():
+                    prev_btn = gr.Button("◀ 上一页", scale=1)
+                    page_info = gr.Markdown("第 1/1 页，共 0 条")
+                    next_btn = gr.Button("下一页 ▶", scale=1)
 
                 results_dataframe = gr.Dataframe(
                     headers=[
@@ -284,14 +317,46 @@ def create_results_tab() -> None:
 
         return gr.update(choices=choices)
 
-    async def load_run_details(run_id: str):
-        """Load detailed information for a specific run."""
+    def format_results_dataframe(results: list[EvaluationResult]) -> list:
+        """Format results into dataframe rows."""
+        global _current_result_ids
+        _current_result_ids = [r.id for r in results]  # Cache IDs for detail lookup
+
+        data = []
+        for r in results:
+            tags_str = ", ".join(r.tags) if r.tags else "-"
+            data.append([
+                r.id[:8] + "...",
+                r.annotation.query[:30] + "..." if r.annotation and r.annotation.query else "N/A",
+                tags_str,
+                r.success,
+                round(r.metrics.average_score, 3) if r.metrics else 0,
+                r.rag_interface,
+                round(r.duration_ms, 0),
+            ])
+        return data
+
+    async def load_run_details(
+        run_id: str,
+        page: int = 1,
+        page_size_val: int = 20,
+        search_query: str = "",
+        interface: str = "全部",
+        status: str = "全部",
+        tag: str = "全部",
+    ):
+        """Load detailed information for a specific run with pagination."""
+        global _current_result_ids
+
         if not run_id:
             return (
                 gr.update(value={}),
                 "👈 选择一个评测运行查看结果",
                 gr.update(value=[]),
                 gr.update(choices=["全部"], value="全部"),
+                gr.update(choices=["全部"], value="全部"),
+                gr.update(value="第 1/1 页，共 0 条"),
+                gr.update(value=1),
             )
 
         manager = await get_result_manager()
@@ -303,6 +368,9 @@ def create_results_tab() -> None:
                 "❌ 运行不存在",
                 gr.update(value=[]),
                 gr.update(choices=["全部"], value="全部"),
+                gr.update(choices=["全部"], value="全部"),
+                gr.update(value="第 1/1 页，共 0 条"),
+                gr.update(value=1),
             )
 
         # Run info
@@ -356,47 +424,72 @@ def create_results_tab() -> None:
         all_tags = await manager.get_all_tags(run_id)
         tag_choices = ["全部"] + [t["name"] for t in all_tags.get("result_tags", [])]
 
-        # Results dataframe
-        results = await manager.get_results_by_run(run_id, limit=100)
-        data = []
-        for r in results:
-            tags_str = ", ".join(r.tags) if r.tags else "-"
-            data.append([
-                r.id[:8] + "...",
-                r.annotation.query[:30] + "..." if r.annotation else "N/A",
-                tags_str,
-                r.success,
-                round(r.metrics.average_score, 3) if r.metrics else 0,
-                r.rag_interface,
-                round(r.duration_ms, 0),
-            ])
+        # Get interface choices from run
+        interface_choices = ["全部"] + list(run.rag_interfaces) if run.rag_interfaces else ["全部"]
+
+        # Build filters
+        filters = {}
+        if interface and interface != "全部":
+            filters["rag_interface"] = interface
+        if status == "成功":
+            filters["success"] = True
+        elif status == "失败":
+            filters["success"] = False
+
+        # Calculate offset
+        offset = (page - 1) * page_size_val
+
+        # Search or normal query
+        if search_query:
+            results, total = await manager.search_results(
+                run_id,
+                search_query=search_query,
+                search_fields=["query", "final_answer"],
+                filters=filters,
+                limit=page_size_val,
+                offset=offset,
+            )
+        else:
+            # Apply tag filter in memory (tags are stored in result.tags)
+            results, total = await manager.get_results_by_run(
+                run_id,
+                filters=filters,
+                limit=page_size_val,
+                offset=offset,
+            )
+
+            # Tag filter (in memory)
+            if tag and tag != "全部":
+                results = [r for r in results if tag in r.tags]
+                # Re-count for tag filter
+                all_results, _ = await manager.get_results_by_run(run_id, filters=filters, limit=10000)
+                total = len([r for r in all_results if tag in r.tags])
+
+        # Format dataframe
+        data = format_results_dataframe(results)
+
+        # Calculate total pages
+        total_pages = max(1, (total + page_size_val - 1) // page_size_val)
+        page_info_text = f"第 {page}/{total_pages} 页，共 {total} 条"
 
         return (
             gr.update(value=run_info_data),
             summary_md,
             gr.update(value=data),
-            gr.update(choices=tag_choices, value="全部"),
+            gr.update(choices=tag_choices, value=tag),
+            gr.update(choices=interface_choices, value=interface),
+            gr.update(value=page_info_text),
+            gr.update(value=page),
         )
 
     async def load_result_detail(evt: gr.SelectData, run_id: str):
-        """Load detail for a selected result row."""
+        """Load detail for a selected result row using cached IDs."""
+        global _current_result_ids
         logger.info(f"load_result_detail called: run_id={run_id}, evt.index={evt.index}, type={type(evt.index)}")
 
         if not run_id:
             logger.warning("load_result_detail: no run_id")
             return [gr.update() for _ in range(13)]
-
-        manager = await get_result_manager()
-
-        # First get the run directly to check if it has results
-        run = await manager.get_run(run_id)
-        if run:
-            logger.info(f"get_run returned run with {len(run.results)} results")
-        else:
-            logger.warning(f"get_run returned None for run_id={run_id}")
-
-        results = await manager.get_results_by_run(run_id, limit=100)
-        logger.info(f"load_result_detail: get_results_by_run returned {len(results)} results")
 
         # Handle different Gradio versions
         # Gradio 5.x: evt.index is int (row index)
@@ -414,13 +507,21 @@ def create_results_tab() -> None:
             logger.warning(f"load_result_detail: unexpected evt.index type: {type(evt.index)}, value: {evt.index}")
             return [gr.update() for _ in range(13)]
 
-        logger.info(f"load_result_detail: row_index={row_index}")
+        logger.info(f"load_result_detail: row_index={row_index}, cached_ids={len(_current_result_ids)}")
 
-        if row_index >= len(results):
-            logger.warning(f"load_result_detail: row_index {row_index} >= len(results) {len(results)}")
+        # Use cached result ID if available
+        if row_index < len(_current_result_ids):
+            result_id = _current_result_ids[row_index]
+            logger.info(f"load_result_detail: using cached ID {result_id}")
+            manager = await get_result_manager()
+            result = await manager.get_result(result_id)
+            if not result:
+                logger.warning(f"load_result_detail: could not find result {result_id}")
+                return [gr.update() for _ in range(13)]
+        else:
+            logger.warning(f"load_result_detail: row_index {row_index} >= cached IDs {len(_current_result_ids)}")
             return [gr.update() for _ in range(13)]
 
-        result = results[row_index]
         logger.info(f"load_result_detail: got result, annotation={result.annotation is not None}, rag_response={result.rag_response is not None}")
 
         if result.annotation:
@@ -597,7 +698,7 @@ def create_results_tab() -> None:
         adapter = MockRAGAdapter(simulate_latency=True)
 
         # Get a sample query (in real usage, get from selected result)
-        results = await manager.get_results_by_run(run_id, limit=1)
+        results, _ = await manager.get_results_by_run(run_id, limit=1)
         if results and results[0].annotation:
             query = results[0].annotation.query
         else:
@@ -697,13 +798,68 @@ def create_results_tab() -> None:
         except Exception as e:
             return f"❌ 导出失败：{str(e)}"
 
-    # State for selected result
-    selected_result_id = gr.State(None)
-    selected_result_index = gr.State(None)
+    # ===== Helper Functions for Events =====
 
-    async def on_result_select(evt: gr.SelectData):
-        """Store selected result index and ID."""
-        return evt.index, None  # Will be resolved later with result ID
+    async def navigate_page(
+        run_id: str,
+        direction: int,  # -1 for prev, 1 for next
+        current_page: int,
+        page_size_val: int,
+        interface: str,
+        status: str,
+        tag: str,
+        search_query: str,
+    ):
+        """Navigate to previous or next page."""
+        new_page = current_page + direction
+        if new_page < 1:
+            new_page = 1
+
+        return await load_run_details(
+            run_id, page=new_page, page_size_val=page_size_val,
+            search_query=search_query, interface=interface, status=status, tag=tag
+        )
+
+    async def search_results(
+        run_id: str,
+        query: str,
+        page_size_val: int,
+        interface: str,
+        status: str,
+        tag: str,
+    ):
+        """Search results by query text."""
+        return await load_run_details(
+            run_id, page=1, page_size_val=page_size_val,
+            search_query=query, interface=interface, status=status, tag=tag
+        )
+
+    async def clear_search(
+        run_id: str,
+        page_size_val: int,
+        interface: str,
+        status: str,
+        tag: str,
+    ):
+        """Clear search and show all results."""
+        return await load_run_details(
+            run_id, page=1, page_size_val=page_size_val,
+            search_query="", interface=interface, status=status, tag=tag
+        )
+
+    async def filter_results(
+        run_id: str,
+        interface: str,
+        status: str,
+        tag: str,
+        page: int = 1,
+        page_size_val: int = 20,
+    ):
+        """Filter results and update the dataframe."""
+        return await load_run_details(
+            run_id, page=page, page_size_val=page_size_val,
+            interface=interface, status=status, tag=tag
+        )
 
     async def add_tag_to_result(
         run_id: str,
@@ -712,6 +868,8 @@ def create_results_tab() -> None:
         preset_tag: Optional[str],
     ):
         """Add a tag to the selected result."""
+        global _current_result_ids
+
         if not run_id or result_index is None:
             return "❌ 请先选择一条结果", gr.update()
 
@@ -720,19 +878,19 @@ def create_results_tab() -> None:
         if not tag_to_add:
             return "❌ 请输入或选择一个标签", gr.update()
 
-        manager = await get_result_manager()
-        results = await manager.get_results_by_run(run_id, limit=100)
-
-        if result_index >= len(results):
+        # Use cached result ID
+        if result_index >= len(_current_result_ids):
             return "❌ 结果不存在", gr.update()
 
-        result = results[result_index]
-        success = await manager.add_result_tag(run_id, result.id, tag_to_add)
+        result_id = _current_result_ids[result_index]
+
+        manager = await get_result_manager()
+        success = await manager.add_result_tag(run_id, result_id, tag_to_add)
 
         if success:
-            # Refresh result detail
-            result = results[result_index]  # Get updated result
-            if result.tags:
+            # Get updated result
+            result = await manager.get_result(result_id)
+            if result and result.tags:
                 tags_display = "**当前标签**: " + " | ".join([f"`{t}`" for t in result.tags])
             else:
                 tags_display = "**当前标签**: 无"
@@ -747,6 +905,8 @@ def create_results_tab() -> None:
         preset_tag: Optional[str],
     ):
         """Remove a tag from the selected result."""
+        global _current_result_ids
+
         if not run_id or result_index is None:
             return "❌ 请先选择一条结果", gr.update()
 
@@ -755,23 +915,19 @@ def create_results_tab() -> None:
         if not tag_to_remove:
             return "❌ 请输入或选择要移除的标签", gr.update()
 
-        manager = await get_result_manager()
-        results = await manager.get_results_by_run(run_id, limit=100)
-
-        if result_index >= len(results):
+        # Use cached result ID
+        if result_index >= len(_current_result_ids):
             return "❌ 结果不存在", gr.update()
 
-        result = results[result_index]
-        success = await manager.remove_result_tag(run_id, result.id, tag_to_remove)
+        result_id = _current_result_ids[result_index]
+
+        manager = await get_result_manager()
+        success = await manager.remove_result_tag(run_id, result_id, tag_to_remove)
 
         if success:
-            # Get updated result from run
-            run = await manager.get_run(run_id)
-            for r in run.results:
-                if r.id == result.id:
-                    result = r
-                    break
-            if result.tags:
+            # Get updated result
+            result = await manager.get_result(result_id)
+            if result and result.tags:
                 tags_display = "**当前标签**: " + " | ".join([f"`{t}`" for t in result.tags])
             else:
                 tags_display = "**当前标签**: 无"
@@ -779,33 +935,9 @@ def create_results_tab() -> None:
         else:
             return "❌ 移除失败或标签不存在", gr.update()
 
-    async def filter_by_tag(run_id: str, tag: str):
-        """Filter results by tag."""
-        if not run_id:
-            return gr.update()
-
-        manager = await get_result_manager()
-        results = await manager.get_results_by_run(run_id, limit=100)
-
-        data = []
-        for r in results:
-            # Filter by tag if specified
-            if tag and tag != "全部":
-                if tag not in r.tags:
-                    continue
-
-            tags_str = ", ".join(r.tags) if r.tags else "-"
-            data.append([
-                r.id[:8] + "...",
-                r.annotation.query[:30] + "..." if r.annotation else "N/A",
-                tags_str,
-                r.success,
-                round(r.metrics.average_score, 3) if r.metrics else 0,
-                r.rag_interface,
-                round(r.duration_ms, 0),
-            ])
-
-        return gr.update(value=data)
+    # ===== State Variables =====
+    selected_result_id = gr.State(None)
+    selected_result_index = gr.State(None)
 
     # ===== Connect Events =====
 
@@ -816,8 +948,8 @@ def create_results_tab() -> None:
 
     run_selector.change(
         fn=load_run_details,
-        inputs=[run_selector],
-        outputs=[run_info, summary_display, results_dataframe, tag_filter],
+        inputs=[run_selector, page_num, page_size],
+        outputs=[run_info, summary_display, results_dataframe, tag_filter, interface_filter, page_info, page_num],
     )
 
     # Result selection
@@ -866,11 +998,55 @@ def create_results_tab() -> None:
         ],
     )
 
-    # Tag filter
+    # Pagination
+    prev_btn.click(
+        fn=navigate_page,
+        inputs=[run_selector, gr.State(-1), page_num, page_size, interface_filter, status_filter, tag_filter, search_input],
+        outputs=[run_info, summary_display, results_dataframe, tag_filter, interface_filter, page_info, page_num],
+    )
+
+    next_btn.click(
+        fn=navigate_page,
+        inputs=[run_selector, gr.State(1), page_num, page_size, interface_filter, status_filter, tag_filter, search_input],
+        outputs=[run_info, summary_display, results_dataframe, tag_filter, interface_filter, page_info, page_num],
+    )
+
+    page_size.change(
+        fn=load_run_details,
+        inputs=[run_selector, gr.State(1), page_size, search_input, interface_filter, status_filter, tag_filter],
+        outputs=[run_info, summary_display, results_dataframe, tag_filter, interface_filter, page_info, page_num],
+    )
+
+    # Search
+    search_btn.click(
+        fn=search_results,
+        inputs=[run_selector, search_input, page_size, interface_filter, status_filter, tag_filter],
+        outputs=[run_info, summary_display, results_dataframe, tag_filter, interface_filter, page_info, page_num],
+    )
+
+    clear_search_btn.click(
+        fn=clear_search,
+        inputs=[run_selector, page_size, interface_filter, status_filter, tag_filter],
+        outputs=[run_info, summary_display, results_dataframe, tag_filter, interface_filter, page_info, page_num],
+    )
+
+    # Filters
+    interface_filter.change(
+        fn=filter_results,
+        inputs=[run_selector, interface_filter, status_filter, tag_filter, page_num, page_size],
+        outputs=[run_info, summary_display, results_dataframe, tag_filter, interface_filter, page_info, page_num],
+    )
+
+    status_filter.change(
+        fn=filter_results,
+        inputs=[run_selector, interface_filter, status_filter, tag_filter, page_num, page_size],
+        outputs=[run_info, summary_display, results_dataframe, tag_filter, interface_filter, page_info, page_num],
+    )
+
     tag_filter.change(
-        fn=filter_by_tag,
-        inputs=[run_selector, tag_filter],
-        outputs=[results_dataframe],
+        fn=filter_results,
+        inputs=[run_selector, interface_filter, status_filter, tag_filter, page_num, page_size],
+        outputs=[run_info, summary_display, results_dataframe, tag_filter, interface_filter, page_info, page_num],
     )
 
     # Tag management
