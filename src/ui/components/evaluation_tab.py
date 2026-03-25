@@ -45,13 +45,13 @@ def create_evaluation_tab() -> None:
                     rag_url_1 = gr.Textbox(
                         label="RAG 接口 1 URL",
                         placeholder="http://localhost:8000",
-                        value="",
+                        value="http://127.0.0.1:8123",
                         scale=1,
                     )
                     rag_url_2 = gr.Textbox(
                         label="RAG 接口 2 URL",
                         placeholder="http://localhost:8001",
-                        value="",
+                        value="http://127.0.0.1:8123",
                         visible=False,
                         scale=1,
                     )
@@ -180,7 +180,9 @@ def create_evaluation_tab() -> None:
 
     # Results preview
     with gr.Group(elem_classes=["gr-box"]):
-        gr.Markdown("**📋 最近评测结果**")
+        with gr.Row():
+            gr.Markdown("**📋 最近评测结果**")
+            refresh_results_btn = gr.Button("🔄 刷新", variant="secondary", size="sm", scale=0)
         results_table = gr.Dataframe(
             headers=["运行 ID", "名称", "状态", "完成/总数", "耗时"],
             datatype=["str", "str", "str", "str", "str"],
@@ -233,6 +235,7 @@ def create_evaluation_tab() -> None:
                 {},
                 gr.update(visible=True),
                 gr.update(visible=False),
+                gr.update(),  # results_table unchanged
             )
             return
 
@@ -251,7 +254,7 @@ def create_evaluation_tab() -> None:
             from ...rag.langgraph_adapter import LangGraphAdapter
             from ...rag.base_adapter import RAGAdapterConfig
             config = RAGAdapterConfig(service_url=url1, timeout=int(timeout))
-            adapter1 = LangGraphAdapter(config)
+            adapter1 = LangGraphAdapter(config, assistant_id="rag_agent")
             await adapter1.initialize()
             runner.set_rag_adapter(adapter1, "default")
         else:
@@ -262,7 +265,7 @@ def create_evaluation_tab() -> None:
             from ...rag.langgraph_adapter import LangGraphAdapter
             from ...rag.base_adapter import RAGAdapterConfig
             config = RAGAdapterConfig(service_url=url2, timeout=int(timeout))
-            adapter2 = LangGraphAdapter(config)
+            adapter2 = LangGraphAdapter(config, assistant_id="rag_agent")
             await adapter2.initialize()
             runner.set_rag_adapter(adapter2, "interface_2")
             interfaces = ["default", "interface_2"]
@@ -279,50 +282,62 @@ def create_evaluation_tab() -> None:
                 {},
                 gr.update(visible=True),
                 gr.update(visible=False),
+                gr.update(),  # results_table unchanged
             )
             return
 
-        # Progress callback
-        def on_progress(progress):
-            return (
-                gr.update(value=progress.progress_percent),
-                f"正在评测：{progress.current_query[:50]}... ({progress.completed}/{progress.total})",
-            )
+        # Progress callback - 使用生成器模式，不再需要回调
+        # runner.set_progress_callback 已弃用
 
-        runner.set_progress_callback(lambda p: None)
-
-        # Run evaluation
+        # Run evaluation with progress updates
         yield (
             gr.update(value=0),
             "🔄 开始评测...",
             {"status": "running", "total": len(annotations)},
             gr.update(visible=False),
             gr.update(visible=True),
+            gr.update(),  # results_table unchanged
         )
 
         try:
-            run = await runner.run(
+            # 使用 run_iter 获取实时进度
+            async for progress, result, stats in runner.run_iter(
                 annotations=annotations,
                 run_name=name,
                 rag_interfaces=interfaces,
-            )
+            ):
+                # 每次评测完成后更新 UI
+                status_data = {
+                    "status": "running",
+                    "progress": {
+                        "completed": progress.completed,
+                        "total": progress.total,
+                        "failed": progress.failed,
+                        "elapsed": f"{progress.elapsed_seconds:.1f}s",
+                        "remaining": f"{progress.estimated_remaining_seconds:.1f}s",
+                    },
+                    "metrics": stats,
+                }
 
-            status = {
-                "status": run.status,
-                "completed": run.completed_count,
-                "failed": run.failed_count,
-                "duration": f"{run.duration_seconds:.1f}s",
-                "average_score": sum(
-                    r.metrics.average_score for r in run.results if r.success
-                ) / len([r for r in run.results if r.success]) if any(r.success for r in run.results) else 0,
-            }
+                yield (
+                    gr.update(value=progress.progress_percent),
+                    f"评测中: {progress.current_query[:30]}... ({progress.completed}/{progress.total})",
+                    status_data,
+                    gr.update(visible=False),
+                    gr.update(visible=True),
+                    gr.update(),  # results_table unchanged during evaluation
+                )
 
+            # 完成
+            # 加载最新结果
+            recent_results = await load_recent_results()
             yield (
                 gr.update(value=100),
-                f"✅ 评测完成：{run.completed_count}/{run.total_annotations}",
-                status,
+                f"✅ 评测完成",
+                {"status": "completed"},
                 gr.update(visible=True),
                 gr.update(visible=False),
+                recent_results,
             )
 
         except Exception as e:
@@ -333,6 +348,7 @@ def create_evaluation_tab() -> None:
                 {"status": "failed", "error": str(e)},
                 gr.update(visible=True),
                 gr.update(visible=False),
+                gr.update(),  # results_table unchanged
             )
 
     async def load_recent_results():
@@ -382,12 +398,17 @@ def create_evaluation_tab() -> None:
             retrieval_metrics, generation_metrics, faq_metrics, comprehensive_metrics,
             concurrency, eval_timeout, run_name,
         ],
-        outputs=[progress_bar, progress_text, status_display, start_btn, cancel_btn],
+        outputs=[progress_bar, progress_text, status_display, start_btn, cancel_btn, results_table],
     )
 
     cancel_btn.click(
         fn=cancel_evaluation,
         outputs=[progress_text],
+    )
+
+    refresh_results_btn.click(
+        fn=load_recent_results,
+        outputs=[results_table],
     )
 
     # 返回需要初始化加载的组件和函数

@@ -22,12 +22,17 @@ class LangGraphAdapter(RAGAdapter):
     Implements async calls with retry logic.
     """
 
+    # Default assistant ID for LangGraph
+    DEFAULT_ASSISTANT_ID = "rag_agent"
+
     def __init__(
         self,
         config: RAGAdapterConfig,
+        assistant_id: Optional[str] = None,
         timing_config: Optional[TimingExtractionConfig] = None,
     ):
         self.config = config
+        self.assistant_id = assistant_id or self.DEFAULT_ASSISTANT_ID
         self.timing_config = timing_config or get_default_config()
         self.timing_extractor = TimingExtractor(self.timing_config)
         self._client = None
@@ -43,9 +48,13 @@ class LangGraphAdapter(RAGAdapter):
             # Import here to allow module to load without langgraph
             from langgraph.pregel.remote import RemoteGraph
 
-            self._client = RemoteGraph(self.config.service_url)
+            # LangGraph 1.x: assistant_id is first positional arg, url is keyword arg
+            self._client = RemoteGraph(
+                self.assistant_id,
+                url=self.config.service_url,
+            )
             self._initialized = True
-            logger.info(f"Initialized LangGraph adapter: {self.config.service_url}")
+            logger.info(f"Initialized LangGraph adapter: {self.config.service_url} (assistant: {self.assistant_id})")
         except ImportError:
             logger.warning(
                 "langgraph not installed, using mock client. "

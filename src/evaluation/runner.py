@@ -7,7 +7,7 @@ import asyncio
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, AsyncIterator, Callable, Optional
 
 from ..models.annotation import Annotation
 from ..models.evaluation_result import EvaluationResult, EvaluationRun
@@ -158,6 +158,61 @@ class EvaluationRunner:
                 _running_count -= 1
                 self._running = False
 
+    async def run_iter(
+        self,
+        annotations: list[Annotation],
+        run_name: str = "",
+        rag_interfaces: Optional[list[str]] = None,
+    ) -> AsyncIterator[tuple[EvaluationProgress, Optional[EvaluationResult], dict]]:
+        """
+        Run evaluation and yield progress after each item completes.
+
+        This is a generator version of run() that yields progress updates
+        after each evaluation completes, enabling real-time UI updates.
+
+        Args:
+            annotations: List of annotations to evaluate
+            run_name: Name for this evaluation run
+            rag_interfaces: RAG interface names to use (default: ["default"])
+
+        Yields:
+            Tuple of (progress, result, stats) after each evaluation completes.
+            result is None for the final yield indicating completion.
+            stats contains real-time metrics statistics.
+
+        Raises:
+            EvaluationError: If evaluation is already running or max concurrent runs reached
+        """
+        global _running_count
+
+        if self._running:
+            raise EvaluationError("Evaluation already running")
+
+        # Acquire global semaphore to limit concurrent evaluation runs
+        global_semaphore = _get_global_semaphore()
+        acquired = global_semaphore.locked() and _running_count >= _max_concurrent_runs
+
+        if acquired:
+            raise EvaluationError(
+                f"Maximum concurrent evaluation runs ({_max_concurrent_runs}) reached. "
+                "Please wait for other evaluations to complete."
+            )
+
+        # Try to acquire the global semaphore
+        async with global_semaphore:
+            _running_count += 1
+            self._running = True
+            self._cancelled = False
+
+            try:
+                async for progress, result, stats in self._run_evaluation_iter(
+                    annotations, run_name, rag_interfaces
+                ):
+                    yield progress, result, stats
+            finally:
+                _running_count -= 1
+                self._running = False
+
     async def _run_evaluation(
         self,
         annotations: list[Annotation],
@@ -250,6 +305,108 @@ class EvaluationRunner:
 
         return run
 
+    async def _run_evaluation_iter(
+        self,
+        annotations: list[Annotation],
+        run_name: str,
+        rag_interfaces: Optional[list[str]],
+    ) -> AsyncIterator[tuple[EvaluationProgress, Optional[EvaluationResult], dict]]:
+        """
+        Internal generator method to run evaluation with progress updates.
+        Uses asyncio.as_completed to yield results as they complete.
+        Yields (progress, result, stats) after each evaluation completes.
+        """
+        rag_interfaces = rag_interfaces or list(self._rag_adapters.keys()) or ["default"]
+
+        run = EvaluationRun(
+            name=run_name,
+            rag_interfaces=rag_interfaces,
+            selected_metrics=[m.name for m in self._metrics],
+            concurrent_workers=self.max_concurrent,
+            total_annotations=len(annotations),
+            status="running",
+        )
+
+        self._progress = EvaluationProgress(
+            total=len(annotations) * len(rag_interfaces),
+            start_time=time.time(),
+        )
+
+        # Initialize process pool for CPU-intensive work
+        self._process_pool = ProcessPoolExecutor(max_workers=4)
+
+        # Get LLM evaluator
+        llm_evaluator = None
+        if any(m.requires_llm for m in self._metrics):
+            llm_evaluator = await get_llm_evaluator()
+
+        try:
+            # Save initial run
+            result_manager = await get_result_manager()
+            await result_manager.save_run(run)
+
+            # Run evaluation with semaphore for concurrency control
+            semaphore = asyncio.Semaphore(self.max_concurrent)
+
+            # Build task map for as_completed
+            task_to_info: dict = {}
+            for annotation in annotations:
+                for rag_interface in rag_interfaces:
+                    if self._cancelled:
+                        break
+                    task = asyncio.create_task(
+                        self._evaluate_single(
+                            annotation=annotation,
+                            rag_interface=rag_interface,
+                            run_id=run.id,
+                            llm_evaluator=llm_evaluator,
+                            semaphore=semaphore,
+                        )
+                    )
+                    task_to_info[task] = (annotation, rag_interface)
+
+                if self._cancelled:
+                    break
+
+            # Process tasks as they complete - enables real-time progress
+            for coro in asyncio.as_completed(task_to_info.keys()):
+                if self._cancelled:
+                    break
+
+                try:
+                    result = await coro
+                    run.add_result(result)
+
+                    # Yield progress update with stats
+                    yield self._progress, result, self._get_current_stats(run)
+
+                except Exception as e:
+                    logger.error(f"Evaluation task failed: {e}")
+                    run.failed_count += 1
+                    yield self._progress, None, self._get_current_stats(run)
+
+            # Finish run
+            run.finish()
+            await result_manager.save_run(run)
+
+            logger.info(
+                f"Evaluation run completed: {run.completed_count}/{run.total_annotations} "
+                f"in {run.duration_seconds:.1f}s"
+            )
+
+            # Final yield to signal completion
+            yield self._progress, None, self._get_current_stats(run)
+
+        except Exception as e:
+            run.status = "failed"
+            logger.error(f"Evaluation run failed: {e}")
+            raise EvaluationError(f"Evaluation run failed: {e}")
+
+        finally:
+            if self._process_pool:
+                self._process_pool.shutdown(wait=False)
+                self._process_pool = None
+
     async def _evaluate_single(
         self,
         annotation: Annotation,
@@ -336,6 +493,33 @@ class EvaluationRunner:
                     self._progress_callback(self._progress)
             except Exception as e:
                 logger.warning(f"Progress callback failed: {e}")
+
+    def _get_current_stats(self, run: EvaluationRun) -> dict:
+        """获取当前统计数据"""
+        stats = {
+            "interfaces": {},
+        }
+
+        for iface, summary in run.summary_by_interface.items():
+            stats["interfaces"][iface] = {
+                "average_score": round(summary.get("average_score", 0), 3),
+                "success_rate": round(summary.get("success_rate", 0) * 100, 1),
+                "total": summary.get("total", 0),
+                "successful": summary.get("successful", 0),
+            }
+
+        # 计算总体通过率 (指标级别)
+        total_metrics = 0
+        passed_metrics = 0
+        for result in run.results:
+            if result.success and result.metrics:
+                total_metrics += result.metrics.total_metrics
+                passed_metrics += result.metrics.passed_metrics
+
+        if total_metrics > 0:
+            stats["overall_pass_rate"] = round(passed_metrics / total_metrics * 100, 1)
+
+        return stats
 
     def cancel(self) -> None:
         """Cancel the running evaluation."""

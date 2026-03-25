@@ -79,6 +79,10 @@ def create_app() -> gr.Blocks:
             result = await annotation_components["load_annotations"](1, 20, "")
             return result  # 返回 (dataframe_update, total_count_update, page_num_update)
 
+        async def _init_results():
+            """初始化评测结果表格"""
+            return await evaluation_components["load_recent_results"]()
+
         app.load(
             fn=_init_annotations,
             outputs=[
@@ -86,6 +90,12 @@ def create_app() -> gr.Blocks:
                 annotation_components["total_count"],
                 annotation_components.get("page_num"),  # 可选：更新页码
             ],
+        )
+
+        # 初始化评测结果表格
+        app.load(
+            fn=_init_results,
+            outputs=[evaluation_components["results_table"]],
         )
 
         # ===== Footer =====

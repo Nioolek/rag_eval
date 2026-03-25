@@ -74,22 +74,31 @@ class ResultManager:
         offset: int = 0,
     ) -> list[EvaluationRun]:
         """
-        List evaluation runs.
+        List evaluation runs sorted by start time (newest first).
 
         Args:
             limit: Maximum number of runs to return
             offset: Number of runs to skip
 
         Returns:
-            List of EvaluationRun
+            List of EvaluationRun sorted by started_at descending
         """
+        # Get all runs (no limit initially for proper sorting)
         runs_data = await self.storage.get_all(
             self.RUNS_COLLECTION,
-            limit=limit,
-            offset=offset,
+            limit=1000,  # Get enough for sorting
+            offset=0,
         )
 
-        return [EvaluationRun.from_dict(d) for d in runs_data]
+        # Parse and sort by started_at descending (newest first)
+        runs = [EvaluationRun.from_dict(d) for d in runs_data]
+        runs.sort(
+            key=lambda r: r.started_at or datetime.min,
+            reverse=True
+        )
+
+        # Apply offset and limit after sorting
+        return runs[offset:offset + limit]
 
     async def get_results_by_run(
         self,
