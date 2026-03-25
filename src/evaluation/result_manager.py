@@ -2,9 +2,13 @@
 Result manager for storing and retrieving evaluation results.
 """
 
+import asyncio
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+
+import aiofiles
 
 from ..models.evaluation_result import EvaluationResult, EvaluationRun
 from ..storage.base import StorageBackend
@@ -187,35 +191,38 @@ class ResultManager:
             output_path = Path(f"evaluation_run_{run_id}.{format}")
 
         if format == "json":
-            import json
             export_data = {
                 "run": run.to_dict(),
                 "results": [r.to_dict() for r in results],
             }
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(export_data, f, ensure_ascii=False, indent=2)
+            async with aiofiles.open(output_path, 'w', encoding='utf-8') as f:
+                await f.write(json.dumps(export_data, ensure_ascii=False, indent=2))
 
         elif format == "csv":
             import csv
-            with open(output_path, 'w', encoding='utf-8', newline='') as f:
-                writer = csv.writer(f)
+            import io
+            output = io.StringIO()
+            writer = csv.writer(output)
 
-                # Header
+            # Header
+            writer.writerow([
+                "result_id", "annotation_id", "success",
+                "duration_ms", "average_score", "rag_interface"
+            ])
+
+            # Data
+            for r in results:
                 writer.writerow([
-                    "result_id", "annotation_id", "success",
-                    "duration_ms", "average_score", "rag_interface"
+                    r.id,
+                    r.annotation_id,
+                    r.success,
+                    r.duration_ms,
+                    r.metrics.average_score,
+                    r.rag_interface,
                 ])
 
-                # Data
-                for r in results:
-                    writer.writerow([
-                        r.id,
-                        r.annotation_id,
-                        r.success,
-                        r.duration_ms,
-                        r.metrics.average_score,
-                        r.rag_interface,
-                    ])
+            async with aiofiles.open(output_path, 'w', encoding='utf-8', newline='') as f:
+                await f.write(output.getvalue())
 
         logger.info(f"Exported run {run_id} to {output_path}")
         return output_path

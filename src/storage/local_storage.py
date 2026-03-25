@@ -178,30 +178,31 @@ class LocalStorage(StorageBackend):
         if not path.exists():
             return False
 
-        # Read all records
-        records = []
-        found = False
-
-        async with aiofiles.open(path, mode='r', encoding='utf-8') as f:
-            async for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                    if record.get("id") == record_id:
-                        record.update(data)
-                        record["updated_at"] = datetime.now().isoformat()
-                        found = True
-                    records.append(record)
-                except json.JSONDecodeError:
-                    continue
-
-        if not found:
-            return False
-
-        # Rewrite file
+        # Lock the entire operation (read + write) to prevent race conditions
         async with self._get_lock():
+            # Read all records
+            records = []
+            found = False
+
+            async with aiofiles.open(path, mode='r', encoding='utf-8') as f:
+                async for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                        if record.get("id") == record_id:
+                            record.update(data)
+                            record["updated_at"] = datetime.now().isoformat()
+                            found = True
+                        records.append(record)
+                    except json.JSONDecodeError:
+                        continue
+
+            if not found:
+                return False
+
+            # Rewrite file
             async with aiofiles.open(path, mode='w', encoding='utf-8') as f:
                 for record in records:
                     await f.write(json.dumps(record, ensure_ascii=False) + '\n')

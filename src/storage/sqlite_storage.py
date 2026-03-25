@@ -35,20 +35,25 @@ class SQLiteStorage(StorageBackend):
 
     async def initialize(self) -> None:
         """Initialize database connection and create tables."""
-        # Ensure parent directory exists for SQLite file
-        if self.database_url.startswith("sqlite:///"):
-            db_path = Path(self.database_url[10:])
-            db_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            # Ensure parent directory exists for SQLite file
+            if self.database_url.startswith("sqlite:///"):
+                db_path = Path(self.database_url[10:])
+                db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self._db = await aiosqlite.connect(self.database_url.replace("sqlite:///", ""))
-        self._db.row_factory = aiosqlite.Row
+            self._db = await aiosqlite.connect(self.database_url.replace("sqlite:///", ""))
+            self._db.row_factory = aiosqlite.Row
 
-        # Enable WAL mode for better concurrency
-        await self._db.execute("PRAGMA journal_mode=WAL")
-        await self._db.execute("PRAGMA synchronous=NORMAL")
+            # Enable WAL mode for better concurrency
+            await self._db.execute("PRAGMA journal_mode=WAL")
+            await self._db.execute("PRAGMA synchronous=NORMAL")
 
-        await self._create_tables()
-        logger.info(f"Initialized SQLite storage: {self.database_url}")
+            await self._create_tables()
+            logger.info(f"Initialized SQLite storage: {self.database_url}")
+
+        except aiosqlite.Error as e:
+            self._db = None
+            raise StorageError(f"Failed to initialize SQLite database: {e}")
 
     async def _create_tables(self) -> None:
         """Create necessary tables with indexes."""

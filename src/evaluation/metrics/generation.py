@@ -11,6 +11,49 @@ from ...models.metric_result import MetricCategory, MetricResult
 from ...core.logging import logger
 
 
+def _parse_llm_score(content: str) -> float:
+    """
+    Parse a numeric score from LLM response.
+    Handles cases where LLM returns non-numeric content.
+
+    Args:
+        content: Raw LLM response content
+
+    Returns:
+        Parsed float score between 0 and 1
+
+    Raises:
+        ValueError: If no valid number can be extracted
+    """
+    content = content.strip()
+
+    # Try direct float conversion first
+    try:
+        return float(content)
+    except ValueError:
+        pass
+
+    # Try to extract a number from the content
+    # Look for patterns like "0.8", "0.8分", "得分: 0.8", "Score: 0.8"
+    patterns = [
+        r'(\d+\.?\d*)',  # Any decimal number
+        r'(\d+)/(\d+)',  # Fraction like 8/10
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, content)
+        if match:
+            if len(match.groups()) == 2:
+                # Fraction
+                numerator = float(match.group(1))
+                denominator = float(match.group(2))
+                return numerator / denominator if denominator > 0 else 0.0
+            else:
+                return float(match.group(1))
+
+    raise ValueError(f"Cannot parse numeric score from: {content}")
+
+
 class FactualConsistencyMetric(BaseMetric):
     """
     答案事实一致性（无幻觉）
@@ -90,14 +133,17 @@ class FactualConsistencyMetric(BaseMetric):
                 "answer": answer
             })
 
-            score_text = result.content.strip()
-            score = float(score_text)
+            try:
+                score = _parse_llm_score(result.content.strip())
+            except ValueError as e:
+                logger.warning(f"Failed to parse LLM score: {e}, using fallback")
+                return self._calculate_simple(answer, context_text)
 
             return self._create_result(
                 score=min(max(score, 0.0), 1.0),
                 details={
                     "method": "llm",
-                    "raw_response": score_text,
+                    "raw_response": result.content.strip(),
                 }
             )
 
@@ -199,7 +245,12 @@ class AnswerRelevanceMetric(BaseMetric):
             chain = prompt | llm
             result = await chain.ainvoke({"query": query, "answer": answer})
 
-            score = float(result.content.strip())
+            try:
+                score = _parse_llm_score(result.content.strip())
+            except ValueError as e:
+                logger.warning(f"Failed to parse LLM score: {e}, using fallback")
+                return self._calculate_simple(query, answer)
+
             return self._create_result(score=min(max(score, 0.0), 1.0))
 
         except Exception as e:
@@ -314,7 +365,12 @@ class AnswerCompletenessMetric(BaseMetric):
             chain = prompt | llm
             result = await chain.ainvoke({"query": query, "answer": answer})
 
-            score = float(result.content.strip())
+            try:
+                score = _parse_llm_score(result.content.strip())
+            except ValueError as e:
+                logger.warning(f"Failed to parse LLM score: {e}, using fallback")
+                return self._calculate_heuristic(query, answer)
+
             return self._create_result(score=min(max(score, 0.0), 1.0))
 
         except Exception as e:
@@ -533,7 +589,12 @@ class HallucinationDetectionMetric(BaseMetric):
                 "answer": answer
             })
 
-            score = float(result.content.strip())
+            try:
+                score = _parse_llm_score(result.content.strip())
+            except ValueError as e:
+                logger.warning(f"Failed to parse LLM score: {e}, using fallback")
+                return self._calculate_simple(answer, retrieved)
+
             # Higher score = less hallucination
             return self._create_result(
                 score=min(max(score, 0.0), 1.0),

@@ -314,7 +314,9 @@ class RetrievalRelevanceMetric(BaseMetric):
         query_words = set(query.lower().split())
 
         for doc in retrieved:
-            doc_words = set(doc.lower().split())
+            # Use list for proper word counting (set.count() doesn't work)
+            doc_words_list = doc.lower().split()
+            doc_words = set(doc_words_list)
 
             if not doc_words:
                 relevance_scores.append(0.0)
@@ -324,9 +326,9 @@ class RetrievalRelevanceMetric(BaseMetric):
             overlap = len(query_words & doc_words)
             overlap_score = overlap / len(query_words) if query_words else 0
 
-            # IDF-like weighting (simplified)
+            # IDF-like weighting (simplified) - use list for counting
             idf_score = sum(
-                1.0 / (doc_words.count(w) + 1)
+                1.0 / (doc_words_list.count(w) + 1)
                 for w in query_words
                 if w in doc_words
             ) / len(query_words) if query_words else 0

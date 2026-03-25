@@ -6,6 +6,8 @@ import asyncio
 import time
 from typing import Any, Optional, AsyncGenerator
 
+import aiohttp
+
 from ..models.rag_response import RAGResponse, RAGResponseAdapter
 from ..models.annotation import Annotation
 from ..core.exceptions import RAGConnectionError
@@ -37,10 +39,18 @@ class LangGraphAdapter(RAGAdapter):
         self.timing_extractor = TimingExtractor(self.timing_config)
         self._client = None
         self._initialized = False
+        self._http_session: Optional[Any] = None  # aiohttp.ClientSession
 
     @property
     def name(self) -> str:
         return "langgraph"
+
+    async def _get_http_session(self):
+        """Get or create shared HTTP session."""
+        import aiohttp
+        if self._http_session is None or self._http_session.closed:
+            self._http_session = aiohttp.ClientSession()
+        return self._http_session
 
     async def initialize(self) -> None:
         """Initialize the LangGraph client."""
@@ -170,8 +180,6 @@ class LangGraphAdapter(RAGAdapter):
         **kwargs: Any,
     ) -> tuple[RAGResponse, dict[str, Any]]:
         """Fallback HTTP query when LangGraph client not available. Returns (response, raw_data)."""
-        import aiohttp
-
         url = f"{self.config.service_url}/invoke"
         payload = {
             "query": query,
@@ -181,20 +189,20 @@ class LangGraphAdapter(RAGAdapter):
             **kwargs,
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=self.config.timeout),
-            ) as response:
-                if response.status != 200:
-                    raise RAGConnectionError(
-                        f"RAG service returned status {response.status}"
-                    )
+        session = await self._get_http_session()
+        async with session.post(
+            url,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+        ) as response:
+            if response.status != 200:
+                raise RAGConnectionError(
+                    f"RAG service returned status {response.status}"
+                )
 
-                data = await response.json()
-                response = RAGResponseAdapter.from_langgraph(data, query)
-                return response, data
+            data = await response.json()
+            response = RAGResponseAdapter.from_langgraph(data, query)
+            return response, data
 
     async def query_from_annotation(
         self,
@@ -221,18 +229,21 @@ class LangGraphAdapter(RAGAdapter):
             else:
                 # HTTP health check
                 import aiohttp
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        f"{self.config.service_url}/health",
-                        timeout=aiohttp.ClientTimeout(total=5.0),
-                    ) as response:
-                        return response.status == 200
+                session = await self._get_http_session()
+                async with session.get(
+                    f"{self.config.service_url}/health",
+                    timeout=aiohttp.ClientTimeout(total=5.0),
+                ) as response:
+                    return response.status == 200
         except Exception as e:
             logger.warning(f"Health check failed: {e}")
             return False
 
     async def close(self) -> None:
         """Close adapter and release resources."""
+        if self._http_session:
+            await self._http_session.close()
+            self._http_session = None
         self._client = None
         self._initialized = False
 
@@ -342,6 +353,7 @@ class LangGraphAdapter(RAGAdapter):
     ) -> AsyncGenerator[StreamingChunk, None]:
         """Stream via HTTP SSE endpoint."""
         import aiohttp
+        import json
 
         url = f"{self.config.service_url}/stream"
         payload = {
@@ -353,26 +365,25 @@ class LangGraphAdapter(RAGAdapter):
         }
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    url,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=self.config.timeout),
-                ) as response:
-                    if response.status != 200:
-                        raise RAGConnectionError(
-                            f"RAG streaming returned status {response.status}"
-                        )
+            session = await self._get_http_session()
+            async with session.post(
+                url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+            ) as response:
+                if response.status != 200:
+                    raise RAGConnectionError(
+                        f"RAG streaming returned status {response.status}"
+                    )
 
-                    # Parse SSE stream
-                    async for line in response.content:
-                        line = line.decode('utf-8').strip()
-                        if line.startswith('data: '):
-                            import json
-                            data = json.loads(line[6:])
-                            chunk = self._parse_sse_data(data)
-                            if chunk:
-                                yield chunk
+                # Parse SSE stream
+                async for line in response.content:
+                    line = line.decode('utf-8').strip()
+                    if line.startswith('data: '):
+                        data = json.loads(line[6:])
+                        chunk = self._parse_sse_data(data)
+                        if chunk:
+                            yield chunk
 
         except aiohttp.ClientError as e:
             # Fallback to non-streaming

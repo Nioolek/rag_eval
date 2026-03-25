@@ -5,7 +5,6 @@ Implements Template Method pattern for standardized evaluation workflow.
 
 import asyncio
 import time
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Optional
 
@@ -81,7 +80,6 @@ class EvaluationRunner:
         self.timeout = timeout
         self._rag_adapters: dict[str, RAGAdapter] = {}
         self._metrics: list = []
-        self._process_pool: Optional[ProcessPoolExecutor] = None
         self._running = False
         self._cancelled = False
         self._progress: Optional[EvaluationProgress] = None
@@ -240,9 +238,6 @@ class EvaluationRunner:
             start_time=time.time(),
         )
 
-        # Initialize process pool for CPU-intensive work
-        self._process_pool = ProcessPoolExecutor(max_workers=4)
-
         # Get LLM evaluator
         llm_evaluator = None
         if any(m.requires_llm for m in self._metrics):
@@ -261,17 +256,29 @@ class EvaluationRunner:
                 for rag_interface in rag_interfaces:
                     if self._cancelled:
                         break
-                    task = self._evaluate_single(
-                        annotation=annotation,
-                        rag_interface=rag_interface,
-                        run_id=run.id,
-                        llm_evaluator=llm_evaluator,
-                        semaphore=semaphore,
+                    task = asyncio.create_task(
+                        self._evaluate_single(
+                            annotation=annotation,
+                            rag_interface=rag_interface,
+                            run_id=run.id,
+                            llm_evaluator=llm_evaluator,
+                            semaphore=semaphore,
+                        )
                     )
                     tasks.append(task)
 
                 if self._cancelled:
                     break
+
+            # Cancel all tasks if evaluation was cancelled
+            if self._cancelled:
+                for task in tasks:
+                    task.cancel()
+                # Wait for tasks to be cancelled
+                await asyncio.gather(*tasks, return_exceptions=True)
+                run.status = "cancelled"
+                await result_manager.save_run(run)
+                raise EvaluationError("Evaluation cancelled by user")
 
             # Execute tasks
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -293,15 +300,17 @@ class EvaluationRunner:
                 f"in {run.duration_seconds:.1f}s"
             )
 
+        except EvaluationError:
+            raise
         except Exception as e:
             run.status = "failed"
+            # Try to persist failed status
+            try:
+                await result_manager.save_run(run)
+            except Exception:
+                pass
             logger.error(f"Evaluation run failed: {e}")
             raise EvaluationError(f"Evaluation run failed: {e}")
-
-        finally:
-            if self._process_pool:
-                self._process_pool.shutdown(wait=False)
-                self._process_pool = None
 
         return run
 
@@ -331,9 +340,6 @@ class EvaluationRunner:
             total=len(annotations) * len(rag_interfaces),
             start_time=time.time(),
         )
-
-        # Initialize process pool for CPU-intensive work
-        self._process_pool = ProcessPoolExecutor(max_workers=4)
 
         # Get LLM evaluator
         llm_evaluator = None
@@ -368,9 +374,23 @@ class EvaluationRunner:
                 if self._cancelled:
                     break
 
+            # Cancel all tasks if evaluation was cancelled
+            if self._cancelled:
+                for task in task_to_info.keys():
+                    task.cancel()
+                # Wait for tasks to be cancelled
+                await asyncio.gather(*task_to_info.keys(), return_exceptions=True)
+                run.status = "cancelled"
+                await result_manager.save_run(run)
+                raise EvaluationError("Evaluation cancelled by user")
+
             # Process tasks as they complete - enables real-time progress
             for coro in asyncio.as_completed(task_to_info.keys()):
                 if self._cancelled:
+                    # Cancel remaining tasks
+                    for task in task_to_info.keys():
+                        if not task.done():
+                            task.cancel()
                     break
 
                 try:
@@ -380,6 +400,9 @@ class EvaluationRunner:
                     # Yield progress update with stats
                     yield self._progress, result, self._get_current_stats(run)
 
+                except asyncio.CancelledError:
+                    logger.info("Evaluation task cancelled")
+                    run.failed_count += 1
                 except Exception as e:
                     logger.error(f"Evaluation task failed: {e}")
                     run.failed_count += 1
@@ -397,15 +420,17 @@ class EvaluationRunner:
             # Final yield to signal completion
             yield self._progress, None, self._get_current_stats(run)
 
+        except EvaluationError:
+            raise
         except Exception as e:
             run.status = "failed"
+            # Try to persist failed status
+            try:
+                await result_manager.save_run(run)
+            except Exception:
+                pass
             logger.error(f"Evaluation run failed: {e}")
             raise EvaluationError(f"Evaluation run failed: {e}")
-
-        finally:
-            if self._process_pool:
-                self._process_pool.shutdown(wait=False)
-                self._process_pool = None
 
     async def _evaluate_single(
         self,

@@ -3,6 +3,7 @@ Main application entry point.
 RAG Evaluation System - Modern Professional UI
 """
 
+import atexit
 from typing import Optional
 
 import gradio as gr
@@ -10,6 +11,7 @@ import gradio as gr
 from ..core.config import get_config
 from ..core.logging import logger, setup_logging
 from ..evaluation.metrics.metric_registry import get_registry
+from ..storage.storage_factory import StorageFactory
 from .theme import create_modern_theme, CUSTOM_CSS
 from .components.annotation_tab import create_annotation_tab
 from .components.statistics_tab import create_statistics_tab
@@ -17,6 +19,35 @@ from .components.evaluation_tab import create_evaluation_tab
 from .components.results_tab import create_results_tab
 from .components.comparison_tab import create_comparison_tab
 from .components.scheduler_tab import create_scheduler_tab
+
+
+async def _cleanup_resources():
+    """Clean up resources on application shutdown."""
+    try:
+        logger.info("🧹 Cleaning up resources...")
+        await StorageFactory.close_all()
+        logger.info("✅ Resources cleaned up successfully")
+    except Exception as e:
+        logger.error(f"❌ Error during cleanup: {e}")
+
+
+def _sync_cleanup():
+    """Synchronous wrapper for cleanup (called by atexit)."""
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Schedule cleanup as a task
+            asyncio.create_task(_cleanup_resources())
+        else:
+            # Run cleanup directly
+            loop.run_until_complete(_cleanup_resources())
+    except Exception as e:
+        logger.error(f"❌ Cleanup error: {e}")
+
+
+# Register cleanup on module load
+atexit.register(_sync_cleanup)
 
 
 def create_app() -> gr.Blocks:
@@ -87,6 +118,18 @@ def create_app() -> gr.Blocks:
             """初始化结果查看页面的运行列表"""
             return await results_components["load_runs"]()
 
+        async def _init_statistics():
+            """初始化标注统计页面"""
+            return await statistics_components["load_statistics"]()
+
+        async def _init_comparison():
+            """初始化对比分析页面的运行列表"""
+            return await comparison_components["load_dual_runs"]()
+
+        async def _init_scheduler():
+            """初始化定时任务列表"""
+            return await scheduler_components["load_scheduled_tasks"]()
+
         app.load(
             fn=_init_annotations,
             outputs=[
@@ -106,6 +149,37 @@ def create_app() -> gr.Blocks:
         app.load(
             fn=_init_run_selector,
             outputs=[results_components["run_selector"]],
+        )
+
+        # 初始化标注统计页面
+        app.load(
+            fn=_init_statistics,
+            outputs=[
+                statistics_components["total_card"],
+                statistics_components["active_card"],
+                statistics_components["faq_card"],
+                statistics_components["refusal_card"],
+                statistics_components["today_card"],
+                statistics_components["week_card"],
+                statistics_components["month_card"],
+                statistics_components["conv_card"],
+                statistics_components["doc_card"],
+                statistics_components["language_plot"],
+                statistics_components["agent_plot"],
+                statistics_components["custom_fields_display"],
+            ],
+        )
+
+        # 初始化对比分析页面的运行列表
+        app.load(
+            fn=_init_comparison,
+            outputs=[comparison_components["run_selector"]],
+        )
+
+        # 初始化定时任务列表
+        app.load(
+            fn=_init_scheduler,
+            outputs=[scheduler_components["task_list"]],
         )
 
         # ===== Footer =====
