@@ -31,7 +31,7 @@ def create_app() -> gr.Blocks:
     # Note: In Gradio 6.x, theme is passed to launch() not Blocks()
     with gr.Blocks(
         title="RAG 评测系统",
-        fill_width=False,
+        fill_width=True,
     ) as app:
         # ===== Header =====
         gr.HTML(
@@ -72,6 +72,21 @@ def create_app() -> gr.Blocks:
             # Tab 6: 定时任务
             with gr.TabItem("⏰ 定时任务", id="scheduler"):
                 scheduler_components = create_scheduler_tab()
+
+        # ===== Page Load Events =====
+        # 页面加载时自动初始化数据
+        async def _init_annotations():
+            result = await annotation_components["load_annotations"](1, 20, "")
+            return result  # 返回 (dataframe_update, total_count_update, page_num_update)
+
+        app.load(
+            fn=_init_annotations,
+            outputs=[
+                annotation_components["annotation_list"],
+                annotation_components["total_count"],
+                annotation_components.get("page_num"),  # 可选：更新页码
+            ],
+        )
 
         # ===== Footer =====
         gr.HTML(

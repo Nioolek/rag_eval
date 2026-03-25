@@ -89,17 +89,29 @@ def create_annotation_tab() -> None:
                     elem_classes=["markdown-text", "text-muted"],
                 )
 
-        # Right column: Edit form
+        # Right column: Edit form and preview
         with gr.Column(scale=3):
             # Form in a card
             with gr.Group(elem_classes=["gr-box"]):
                 gr.Markdown("**✏️ 标注详情**")
 
-                annotation_id = gr.Textbox(
-                    label="ID",
-                    interactive=False,
-                    placeholder="选择标注后自动填充",
-                )
+                with gr.Row():
+                    with gr.Column(scale=2):
+                        annotation_id = gr.Textbox(
+                            label="ID",
+                            interactive=False,
+                            placeholder="选择标注后自动填充",
+                        )
+                    with gr.Column(scale=1):
+                        language_select = gr.Dropdown(
+                            choices=[
+                                ("🤖 自动", "auto"),
+                                ("🇨🇳 中文", "zh"),
+                                ("🇺🇸 英文", "en"),
+                            ],
+                            value="auto",
+                            label="语言",
+                        )
 
                 query_input = gr.Textbox(
                     label="用户查询 *",
@@ -108,42 +120,18 @@ def create_annotation_tab() -> None:
                     elem_classes=["required-field"],
                 )
 
-                gr.Markdown("**⚙️ 基本配置**")
                 with gr.Row():
-                    language_select = gr.Dropdown(
-                        choices=[
-                            ("🤖 自动", "auto"),
-                            ("🇨🇳 中文", "zh"),
-                            ("🇺🇸 英文", "en"),
-                        ],
-                        value="auto",
-                        label="语言",
-                        scale=1,
-                    )
                     agent_id_input = gr.Textbox(
                         label="Agent ID",
                         value="default",
                         placeholder="default",
-                        scale=1,
+                        scale=2,
                     )
                     thinking_checkbox = gr.Checkbox(
                         label="💭 开启思考模式",
                         value=False,
+                        scale=1,
                     )
-
-                gr.Markdown("**💬 多轮对话历史**")
-                conversation_history = gr.Textbox(
-                    label="对话历史",
-                    placeholder="输入对话历史，每行一条记录...",
-                    lines=3,
-                )
-
-                gr.Markdown("**🎯 标注结果**")
-                gt_documents = gr.Textbox(
-                    label="Ground Truth 文档",
-                    placeholder="输入相关文档，每行一个...",
-                    lines=3,
-                )
 
                 with gr.Row():
                     faq_matched = gr.Checkbox(
@@ -155,21 +143,42 @@ def create_annotation_tab() -> None:
                         value=False,
                     )
 
+            # 标注结果部分
+            with gr.Group(elem_classes=["gr-box"]):
+                gr.Markdown("**🎯 标注结果**")
+
+                gt_documents = gr.Textbox(
+                    label="Ground Truth 文档",
+                    placeholder="输入相关文档，每行一个...",
+                    lines=3,
+                )
+
                 standard_answers = gr.Textbox(
                     label="标准答案",
                     placeholder="输入标准答案，多个答案每行一个...",
                     lines=3,
                 )
 
-                answer_style = gr.Textbox(
-                    label="回答风格要求",
-                    placeholder="例如：专业、简洁、友好...",
-                )
+                with gr.Row():
+                    answer_style = gr.Textbox(
+                        label="回答风格要求",
+                        placeholder="例如：专业、简洁、友好...",
+                        scale=2,
+                    )
+                    notes = gr.Textbox(
+                        label="备注",
+                        placeholder="添加备注...",
+                        scale=1,
+                    )
 
-                notes = gr.Textbox(
-                    label="📝 备注",
-                    placeholder="添加备注信息...",
-                    lines=2,
+            # 多轮对话和自定义字段
+            with gr.Group(elem_classes=["gr-box"]):
+                gr.Markdown("**💬 多轮对话历史 & 扩展字段**")
+
+                conversation_history = gr.Textbox(
+                    label="对话历史",
+                    placeholder="输入对话历史，每行一条记录...",
+                    lines=3,
                 )
 
                 custom_fields = gr.JSON(
@@ -177,7 +186,8 @@ def create_annotation_tab() -> None:
                     value={},
                 )
 
-                # Action buttons
+            # 操作按钮
+            with gr.Group(elem_classes=["gr-box"]):
                 gr.Markdown("**⚡ 操作**")
                 with gr.Row():
                     save_btn = gr.Button(
@@ -226,10 +236,15 @@ def create_annotation_tab() -> None:
                 ann.created_at.strftime("%Y-%m-%d %H:%M"),
             ])
 
-        page_info = f"📊 总计：{result.total} 条 | 第 {page}/{max(1, (result.total + size - 1) // size)} 页"
+        total_pages = max(1, (result.total + size - 1) // size)
+        # 确保页码不超过总页数
+        page = min(page, total_pages)
+        page_info = f"📊 总计：{result.total} 条 | 第 {page}/{total_pages} 页"
+
         return (
             gr.update(value=data),
             page_info,
+            gr.update(value=page),  # 更新页码输入框
         )
 
     async def load_annotation_detail(evt: gr.SelectData):
@@ -265,22 +280,22 @@ def create_annotation_tab() -> None:
 
         return [
             gr.update(value=ann.id),
-            gr.update(value=ann.query),
             gr.update(value=ann.language.value),
+            gr.update(value=ann.query),
             gr.update(value=ann.agent_id),
             gr.update(value=ann.enable_thinking),
-            gr.update(value="\n".join(ann.conversation_history or [])),
-            gr.update(value="\n".join(ann.gt_documents or [])),
             gr.update(value=ann.faq_matched),
             gr.update(value=ann.should_refuse),
+            gr.update(value="\n".join(ann.gt_documents or [])),
             gr.update(value="\n".join(ann.standard_answers or [])),
             gr.update(value=ann.answer_style or ""),
             gr.update(value=ann.notes or ""),
+            gr.update(value="\n".join(ann.conversation_history or [])),
         ]
 
     async def save_annotation(
-        ann_id, query, language, agent_id, thinking,
-        conv_history, gt_docs, faq, refuse, std_answers, style, note
+        ann_id, language, query, agent_id, thinking,
+        faq, refuse, gt_docs, std_answers, style, note, conv_history
     ):
         """Save annotation (create or update)."""
         if not query:
@@ -338,19 +353,19 @@ def create_annotation_tab() -> None:
     def new_annotation():
         """Reset form for new annotation."""
         return [
-            gr.update(value=""),
-            gr.update(value=""),
-            gr.update(value="auto"),
-            gr.update(value="default"),
-            gr.update(value=False),
-            gr.update(value=""),
-            gr.update(value=""),
-            gr.update(value=False),
-            gr.update(value=False),
-            gr.update(value=""),
-            gr.update(value=""),
-            gr.update(value=""),
-            gr.update(value=""),
+            gr.update(value=""),  # annotation_id
+            gr.update(value="auto"),  # language_select
+            gr.update(value=""),  # query_input
+            gr.update(value="default"),  # agent_id_input
+            gr.update(value=False),  # thinking_checkbox
+            gr.update(value=False),  # faq_matched
+            gr.update(value=False),  # should_refuse
+            gr.update(value=""),  # gt_documents
+            gr.update(value=""),  # standard_answers
+            gr.update(value=""),  # answer_style
+            gr.update(value=""),  # notes
+            gr.update(value=""),  # conversation_history
+            gr.update(value=""),  # status_msg
         ]
 
     # ===== Connect Events =====
@@ -361,48 +376,56 @@ def create_annotation_tab() -> None:
 
     async def prev_page(p, s, q):
         """上一页"""
-        return await load_annotations(max(1, int(p) - 1), s, q)
+        new_page = max(1, int(p) - 1)
+        return await load_annotations(new_page, s, q)
 
     async def next_page(p, s, q):
         """下一页"""
-        return await load_annotations(int(p) + 1, s, q)
+        # 获取总数来计算最大页数
+        handler = await get_annotation_handler()
+        if q:
+            result = await handler.search(q, page=1, page_size=1)
+        else:
+            result = await handler.list(page=1, page_size=1)
+
+        total_pages = max(1, (result.total + s - 1) // s)
+        new_page = min(total_pages, int(p) + 1)
+        return await load_annotations(new_page, s, q)
 
     search_btn.click(
         fn=search_annotations,
         inputs=[page_num, page_size, search_box],
-        outputs=[annotation_list, total_count],
+        outputs=[annotation_list, total_count, page_num],
     )
 
     prev_btn.click(
         fn=prev_page,
         inputs=[page_num, page_size, search_box],
-        outputs=[annotation_list, total_count],
+        outputs=[annotation_list, total_count, page_num],
     )
 
     next_btn.click(
         fn=next_page,
         inputs=[page_num, page_size, search_box],
-        outputs=[annotation_list, total_count],
+        outputs=[annotation_list, total_count, page_num],
     )
 
     # Gradio 6.x: select 事件自动传递 SelectData 对象
     annotation_list.select(
         fn=load_annotation_detail,
         outputs=[
-            annotation_id, query_input, language_select, agent_id_input,
-            thinking_checkbox, conversation_history, gt_documents,
-            faq_matched, should_refuse, standard_answers,
-            answer_style, notes
+            annotation_id, language_select, query_input, agent_id_input,
+            thinking_checkbox, faq_matched, should_refuse, gt_documents,
+            standard_answers, answer_style, notes, conversation_history
         ],
     )
 
     save_btn.click(
         fn=save_annotation,
         inputs=[
-            annotation_id, query_input, language_select, agent_id_input,
-            thinking_checkbox, conversation_history, gt_documents,
-            faq_matched, should_refuse, standard_answers,
-            answer_style, notes
+            annotation_id, language_select, query_input, agent_id_input,
+            thinking_checkbox, faq_matched, should_refuse, gt_documents,
+            standard_answers, answer_style, notes, conversation_history
         ],
         outputs=[status_msg],
     )
@@ -410,10 +433,9 @@ def create_annotation_tab() -> None:
     new_btn.click(
         fn=new_annotation,
         outputs=[
-            annotation_id, query_input, language_select, agent_id_input,
-            thinking_checkbox, conversation_history, gt_documents,
-            faq_matched, should_refuse, standard_answers,
-            answer_style, notes, status_msg
+            annotation_id, language_select, query_input, agent_id_input,
+            thinking_checkbox, faq_matched, should_refuse, gt_documents,
+            standard_answers, answer_style, notes, conversation_history, status_msg
         ],
     )
 
@@ -423,15 +445,10 @@ def create_annotation_tab() -> None:
         outputs=[status_msg],
     )
 
-    # 页面加载时自动加载数据
-    annotation_list.load(
-        fn=lambda: load_annotations(1, 20, ""),
-        outputs=[annotation_list, total_count],
-    )
-
     # 返回需要初始化加载的组件和函数
     return {
         "annotation_list": annotation_list,
         "total_count": total_count,
+        "page_num": page_num,
         "load_annotations": load_annotations,
     }

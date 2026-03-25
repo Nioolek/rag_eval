@@ -47,8 +47,14 @@ def create_modern_theme() -> gr.themes.Base:
 CUSTOM_CSS = """
 /* ===== Global Container ===== */
 .gradio-container {
-    max-width: 1400px !important;
-    padding: 20px !important;
+    max-width: 100% !important;
+    padding: 20px 40px !important;
+}
+
+/* 让内容区域填充整个宽度 */
+.main,
+.contain {
+    max-width: 100% !important;
 }
 
 /* ===== Header Styling ===== */

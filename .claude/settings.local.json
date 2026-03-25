@@ -24,7 +24,10 @@
       "Bash(pip show:*)",
       "Bash(python:*)",
       "Bash(netstat -ano)",
-      "Bash(taskkill //F //IM python.exe)"
+      "Bash(taskkill //F //IM python.exe)",
+      "WebSearch",
+      "Bash(sqlite3 data/faq.db \"SELECT * FROM faqs LIMIT 10;\")",
+      "Bash(sqlite3 data/faq.db \"SELECT COUNT\\(*\\) FROM faqs;\")"
     ]
   }
 }
