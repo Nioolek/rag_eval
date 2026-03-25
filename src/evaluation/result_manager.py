@@ -54,6 +54,7 @@ class ResultManager:
         """
         Save an evaluation run.
         Uses update if run already exists (has ID), otherwise creates new.
+        Also saves individual results to evaluation_results collection.
 
         Args:
             run: EvaluationRun to save
@@ -68,11 +69,21 @@ class ResultManager:
             success = await self.storage.update(self.RUNS_COLLECTION, run.id, data)
             if success:
                 logger.debug(f"Updated evaluation run: {run.id}")
+                # Also save individual results for querying
+                for result in run.results:
+                    result.run_id = run.id
+                    await self.save_result(result)
                 return run.id
 
         # Create new run
         run_id = await self.storage.save(self.RUNS_COLLECTION, data)
         logger.info(f"Saved evaluation run: {run_id}")
+
+        # Save individual results for querying
+        for result in run.results:
+            result.run_id = run_id
+            await self.save_result(result)
+
         return run_id
 
     async def get_run(self, run_id: str) -> Optional[EvaluationRun]:
@@ -142,6 +153,7 @@ class ResultManager:
         Returns:
             List of EvaluationResult
         """
+        # First try to get from evaluation_results collection
         results_data = await self.storage.get_all(
             self.COLLECTION,
             filters={"run_id": run_id},
@@ -149,7 +161,19 @@ class ResultManager:
             offset=offset,
         )
 
-        return [EvaluationResult.from_dict(d) for d in results_data]
+        if results_data:
+            logger.debug(f"Found {len(results_data)} results in evaluation_results collection")
+            return [EvaluationResult.from_dict(d) for d in results_data]
+
+        # Fallback: get from the run itself (for legacy data where results are embedded in run)
+        logger.debug(f"No results in collection, fetching from run {run_id}")
+        run = await self.get_run(run_id)
+        if run and run.results:
+            logger.debug(f"Found {len(run.results)} results in run object")
+            return run.results[offset:offset + limit]
+
+        logger.warning(f"No results found for run {run_id}")
+        return []
 
     async def delete_run(self, run_id: str) -> bool:
         """Delete an evaluation run and its results."""

@@ -4,6 +4,7 @@ Enhanced with modern stat cards and improved visualizations.
 """
 
 import gradio as gr
+import pandas as pd
 
 from ...annotation.statistics import get_statistics
 from ...core.logging import logger
@@ -182,16 +183,16 @@ def create_statistics_tab() -> None:
         - **平均答案数：** {stats.avg_standard_answers:.1f}
         """
 
-        # Prepare plot data
-        lang_data = [
+        # Prepare plot data - Gradio 6.x BarPlot requires pandas DataFrame
+        lang_data = pd.DataFrame([
             {"language": k, "count": v}
             for k, v in stats.language_distribution.items()
-        ]
+        ]) if stats.language_distribution else pd.DataFrame(columns=["language", "count"])
 
-        agent_data = [
+        agent_data = pd.DataFrame([
             {"agent": k[:20], "count": v}
             for k, v in stats.agent_distribution.items()
-        ]
+        ]) if stats.agent_distribution else pd.DataFrame(columns=["agent", "count"])
 
         return (
             # Key metrics

@@ -83,7 +83,7 @@ def create_results_tab() -> None:
                     ],
                     datatype=["str", "str", "str", "bool", "number", "str", "number"],
                     interactive=False,
-                    label="评测结果列表",
+                    label="评测结果列表（点击行查看详情）",
                     wrap=True,
                 )
 
@@ -380,16 +380,53 @@ def create_results_tab() -> None:
 
     async def load_result_detail(evt: gr.SelectData, run_id: str):
         """Load detail for a selected result row."""
-        if not run_id or evt.index is None:
+        logger.info(f"load_result_detail called: run_id={run_id}, evt.index={evt.index}, type={type(evt.index)}")
+
+        if not run_id:
+            logger.warning("load_result_detail: no run_id")
             return [gr.update() for _ in range(13)]
 
         manager = await get_result_manager()
-        results = await manager.get_results_by_run(run_id, limit=100)
 
-        if evt.index >= len(results):
+        # First get the run directly to check if it has results
+        run = await manager.get_run(run_id)
+        if run:
+            logger.info(f"get_run returned run with {len(run.results)} results")
+        else:
+            logger.warning(f"get_run returned None for run_id={run_id}")
+
+        results = await manager.get_results_by_run(run_id, limit=100)
+        logger.info(f"load_result_detail: get_results_by_run returned {len(results)} results")
+
+        # Handle different Gradio versions
+        # Gradio 5.x: evt.index is int (row index)
+        # Gradio 6.x: evt.index is list [row, col] or (row, col)
+        if evt.index is None:
+            logger.warning("load_result_detail: evt.index is None")
             return [gr.update() for _ in range(13)]
 
-        result = results[evt.index]
+        # Extract row index from different formats
+        if isinstance(evt.index, (list, tuple)) and len(evt.index) >= 1:
+            row_index = evt.index[0]
+        elif isinstance(evt.index, int):
+            row_index = evt.index
+        else:
+            logger.warning(f"load_result_detail: unexpected evt.index type: {type(evt.index)}, value: {evt.index}")
+            return [gr.update() for _ in range(13)]
+
+        logger.info(f"load_result_detail: row_index={row_index}")
+
+        if row_index >= len(results):
+            logger.warning(f"load_result_detail: row_index {row_index} >= len(results) {len(results)}")
+            return [gr.update() for _ in range(13)]
+
+        result = results[row_index]
+        logger.info(f"load_result_detail: got result, annotation={result.annotation is not None}, rag_response={result.rag_response is not None}")
+
+        if result.annotation:
+            logger.info(f"  query: {result.annotation.query[:50] if result.annotation.query else 'None'}...")
+        if result.rag_response:
+            logger.info(f"  final_answer exists: {result.rag_response.final_answer is not None}")
 
         # Build query rewrite info
         qr_md = "### 📝 查询改写\n\n"
@@ -524,7 +561,7 @@ def create_results_tab() -> None:
             gr.update(
                 value=result.metrics.to_dict() if result.metrics else {}
             ),
-            gr.update(value=result.to_dict()),
+            gr.update(value=""),  # streaming_output - clear it when viewing detail
             # Intermediate results
             gr.update(value=qr_md),
             gr.update(value=faq_md),
@@ -786,7 +823,20 @@ def create_results_tab() -> None:
     # Result selection
     def on_result_row_select(evt: gr.SelectData):
         """Handle result row selection."""
-        return evt.index, evt.index
+        # Handle different Gradio versions
+        # Gradio 5.x: evt.index is int (row index)
+        # Gradio 6.x: evt.index is list [row, col] or (row, col)
+        if evt.index is None:
+            return None, None
+
+        if isinstance(evt.index, (list, tuple)) and len(evt.index) >= 1:
+            row_index = evt.index[0]
+        elif isinstance(evt.index, int):
+            row_index = evt.index
+        else:
+            return None, None
+
+        return row_index, row_index
 
     results_dataframe.select(
         fn=on_result_row_select,
