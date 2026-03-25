@@ -40,7 +40,7 @@ class RAGConfig:
 @dataclass(frozen=True)
 class StorageConfig:
     """Storage configuration."""
-    storage_type: str = "local"  # "local" or "sqlite"
+    storage_type: str = "sqlite"  # "local" or "sqlite"
     data_dir: Path = field(default_factory=lambda: Path("./data"))
     database_url: Optional[str] = None
     chunk_size: int = 8192  # For chunked file operations
@@ -85,7 +85,7 @@ class Config:
         rag_service_url = os.getenv("RAG_SERVICE_URL", "")
 
         # Storage configuration
-        storage_type = os.getenv("STORAGE_TYPE", "local")
+        storage_type = os.getenv("STORAGE_TYPE", "sqlite")
         data_dir = Path(os.getenv("DATA_DIR", "./data"))
         database_url = os.getenv("DATABASE_URL")
 

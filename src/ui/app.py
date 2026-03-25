@@ -83,6 +83,10 @@ def create_app() -> gr.Blocks:
             """初始化评测结果表格"""
             return await evaluation_components["load_recent_results"]()
 
+        async def _init_run_selector():
+            """初始化结果查看页面的运行列表"""
+            return await results_components["load_runs"]()
+
         app.load(
             fn=_init_annotations,
             outputs=[
@@ -96,6 +100,12 @@ def create_app() -> gr.Blocks:
         app.load(
             fn=_init_results,
             outputs=[evaluation_components["results_table"]],
+        )
+
+        # 初始化结果查看页面的运行列表
+        app.load(
+            fn=_init_run_selector,
+            outputs=[results_components["run_selector"]],
         )
 
         # ===== Footer =====

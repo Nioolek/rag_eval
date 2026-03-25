@@ -184,8 +184,8 @@ def create_evaluation_tab() -> None:
             gr.Markdown("**📋 最近评测结果**")
             refresh_results_btn = gr.Button("🔄 刷新", variant="secondary", size="sm", scale=0)
         results_table = gr.Dataframe(
-            headers=["运行 ID", "名称", "状态", "完成/总数", "耗时"],
-            datatype=["str", "str", "str", "str", "str"],
+            headers=["运行 ID", "名称", "状态", "完成/总数", "启动时间", "耗时"],
+            datatype=["str", "str", "str", "str", "str", "str"],
             interactive=False,
             label="评测历史记录",
         )
@@ -358,11 +358,14 @@ def create_evaluation_tab() -> None:
 
         data = []
         for run in runs:
+            # 格式化启动时间
+            started_at = run.started_at.strftime("%Y-%m-%d %H:%M") if run.started_at else "-"
             data.append([
                 run.id[:8] + "...",
                 run.name or "未命名",
                 run.status,
                 f"{run.completed_count}/{run.total_annotations}",
+                started_at,
                 f"{run.duration_seconds:.1f}s",
             ])
 

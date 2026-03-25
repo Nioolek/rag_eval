@@ -49,6 +49,7 @@ class ResultManager:
     async def save_run(self, run: EvaluationRun) -> str:
         """
         Save an evaluation run.
+        Uses update if run already exists (has ID), otherwise creates new.
 
         Args:
             run: EvaluationRun to save
@@ -57,6 +58,15 @@ class ResultManager:
             Run ID
         """
         data = run.to_dict()
+
+        if run.id:
+            # Update existing run
+            success = await self.storage.update(self.RUNS_COLLECTION, run.id, data)
+            if success:
+                logger.debug(f"Updated evaluation run: {run.id}")
+                return run.id
+
+        # Create new run
         run_id = await self.storage.save(self.RUNS_COLLECTION, data)
         logger.info(f"Saved evaluation run: {run_id}")
         return run_id
@@ -90,8 +100,19 @@ class ResultManager:
             offset=0,
         )
 
-        # Parse and sort by started_at descending (newest first)
+        # Parse runs
         runs = [EvaluationRun.from_dict(d) for d in runs_data]
+
+        # Deduplicate by ID (for legacy JSONL data, keep latest)
+        # SQLite storage doesn't need this, but safe to keep
+        seen_ids: dict[str, EvaluationRun] = {}
+        for run in runs:
+            if run.id not in seen_ids:
+                seen_ids[run.id] = run
+
+        runs = list(seen_ids.values())
+
+        # Sort by started_at descending (newest first)
         runs.sort(
             key=lambda r: r.started_at or datetime.min,
             reverse=True
