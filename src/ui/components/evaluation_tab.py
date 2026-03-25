@@ -192,7 +192,8 @@ def create_evaluation_tab() -> None:
 
     def toggle_dual_mode(is_dual):
         """Toggle dual mode visibility."""
-        return gr.update(visible=is_dual)
+        # In Gradio 6.x, need to explicitly set interactive when making visible
+        return gr.update(visible=is_dual, interactive=True)
 
     def select_all_metrics():
         """Select all metrics."""
@@ -361,6 +362,7 @@ def create_evaluation_tab() -> None:
         fn=toggle_dual_mode,
         inputs=[dual_mode],
         outputs=[rag_url_2],
+        show_progress='hidden',
     )
 
     select_all_btn.click(

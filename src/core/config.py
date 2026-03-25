@@ -92,7 +92,7 @@ class Config:
         return cls(
             llm=LLMConfig(
                 api_key=openai_api_key,
-                api_base=os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1"),
+                api_base=os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1"),
                 model=os.getenv("OPENAI_MODEL", "gpt-4"),
                 max_tokens=int(os.getenv("OPENAI_MAX_TOKENS", "4096")),
                 temperature=float(os.getenv("OPENAI_TEMPERATURE", "0.0")),

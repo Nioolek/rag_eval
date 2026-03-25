@@ -166,7 +166,11 @@ class RAGConfig(BaseModel):
 class EnvironmentConfig(BaseSettings):
     """Environment variables configuration (for secrets)."""
 
-    # Alibaba Cloud
+    # OpenAI API (for Alibaba Cloud Coding Plan or other OpenAI-compatible APIs)
+    openai_api_key: str = ""
+    openai_base_url: str = "https://coding.dashscope.aliyuncs.com/v1"
+
+    # Legacy Alibaba Cloud DashScope (deprecated, use openai_api_key instead)
     dashscope_api_key: str = ""
 
     # LLM overrides
@@ -358,6 +362,8 @@ class ConfigManager:
         env = self.env.model_dump()
 
         # Add secrets from env
+        config["openai_api_key"] = env.get("openai_api_key", "")
+        config["openai_base_url"] = env.get("openai_base_url", "https://coding.dashscope.aliyuncs.com/v1")
         config["dashscope_api_key"] = env.get("dashscope_api_key", "")
         config["dashscope_qpm"] = env.get("dashscope_qpm", 60)
 

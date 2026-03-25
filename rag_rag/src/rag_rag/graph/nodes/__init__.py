@@ -98,60 +98,72 @@ async def faq_match_node(state: RAGState) -> dict[str, Any]:
     config = get_config()
 
     # Initialize FAQ store with the data directory
-    # Use lower threshold (0.6) for partial matches
+    # Use higher threshold (0.85) for more accurate matches
     data_dir = Path("data")
     faq_store = FAQStore(
         db_path=data_dir / "faq.db",
-        match_threshold=0.6,  # Lower threshold for better recall
+        match_threshold=0.85,  # Higher threshold for precision
     )
     await faq_store.initialize()
 
     try:
-        # Try multiple search strategies
         results = []
 
-        # Strategy 1: Exact search with full query
-        results = await faq_store.search(query, top_k=1, search_type="exact")
+        # Strategy 1: Try exact match with full query first
+        results = await faq_store.search(query, top_k=3, search_type="exact")
 
-        # Strategy 2: If no results, try with first significant word
+        # Filter results: require at least 60% query word coverage
+        if results:
+            query_words = set(query.lower().split())
+            filtered_results = []
+            for r in results:
+                question_words = set(r.get("question", "").lower().split())
+                common_words = query_words & question_words
+                query_coverage = len(common_words) / len(query_words) if query_words else 0
+
+                # Require meaningful overlap
+                if query_coverage >= 0.6:
+                    filtered_results.append(r)
+
+            results = filtered_results
+
+        # Strategy 2: Try semantic search if available (requires embedding service)
+        # Note: For now, we don't have embedding service, so this falls back to exact
         if not results:
-            # Split query into words and use the most significant one
-            words = query.split()
-            for word in words:
-                if len(word) >= 2:  # Skip single characters
-                    results = await faq_store.search(word, top_k=1, search_type="exact")
-                    if results:
-                        break
-
-        # Strategy 3: Try Chinese character matching for combined queries
-        if not results and len(query) >= 2:
-            # Extract Chinese characters and try matching
-            import re
-            chinese_chars = re.findall(r'[\u4e00-\u9fff]+', query)
-            for chars in chinese_chars:
-                if len(chars) >= 2:
-                    results = await faq_store.search(chars, top_k=1, search_type="exact")
-                    if results:
-                        break
+            results = await faq_store.search(query, top_k=3, search_type="hybrid")
+            # Apply same filtering
+            if results:
+                query_words = set(query.lower().split())
+                filtered_results = []
+                for r in results:
+                    question_words = set(r.get("question", "").lower().split())
+                    common_words = query_words & question_words
+                    query_coverage = len(common_words) / len(query_words) if query_words else 0
+                    if query_coverage >= 0.6:
+                        filtered_results.append(r)
+                results = filtered_results
 
         faq_matched = False
         faq_result = None
 
-        # Use 0.6 threshold for matching
-        threshold = 0.6
-        if results and results[0].get("score", 0) >= threshold:
-            faq_matched = True
+        # Only match if we have high-confidence results
+        if results:
             top_result = results[0]
-            faq_result = {
-                "matched": True,
-                "faq_id": top_result.get("id", ""),
-                "question": top_result.get("question", ""),
-                "answer": top_result.get("answer", ""),
-                "confidence": top_result.get("score", 0),
-                "similarity": top_result.get("similarity", 0),
-                "match_type": top_result.get("match_type", "semantic"),
-                "timing_ms": 0,
-            }
+            score = top_result.get("score", 0)
+
+            # Require score >= 0.85 for a match
+            if score >= 0.85:
+                faq_matched = True
+                faq_result = {
+                    "matched": True,
+                    "faq_id": top_result.get("id", ""),
+                    "question": top_result.get("question", ""),
+                    "answer": top_result.get("answer", ""),
+                    "confidence": score,
+                    "similarity": score,
+                    "match_type": top_result.get("match_type", "exact"),
+                    "timing_ms": 0,
+                }
 
         return {
             "faq_matched": faq_matched,
@@ -596,19 +608,30 @@ async def generate_node(state: RAGState) -> dict[str, Any]:
     - Extract thinking process if enabled
     """
     from rag_rag.services.llm_service import LLMService, LLMConfig
+    from rag_rag.core.config import get_env_config
     import os
 
     system_prompt = state.get("system_prompt", "")
     final_prompt = state.get("final_prompt", "")
     enable_thinking = state.get("enable_thinking", False)
 
-    # Check if we have a valid API key
-    api_key = os.environ.get("DASHSCOPE_API_KEY", "")
-    if api_key and api_key != "sk-placeholder-key":
-        # Use real LLM service
+    # Get API configuration from environment
+    # Prefer OPENAI_API_KEY, fallback to DASHSCOPE_API_KEY for backward compatibility
+    env_config = get_env_config()
+    api_key = env_config.openai_api_key or os.environ.get("OPENAI_API_KEY", "")
+    base_url = env_config.openai_base_url or os.environ.get("OPENAI_BASE_URL", "https://coding.dashscope.aliyuncs.com/v1")
+    model = env_config.llm_model or os.environ.get("LLM_MODEL", "qwen-plus")
+
+    # Fallback to legacy DASHSCOPE_API_KEY
+    if not api_key:
+        api_key = os.environ.get("DASHSCOPE_API_KEY", "")
+
+    if api_key and api_key != "sk-placeholder-key" and not api_key.startswith("sk-xxx"):
+        # Use real LLM service with OpenAI-compatible API
         llm_service = LLMService(LLMConfig(
             api_key=api_key,
-            model="qwen-plus",
+            base_url=base_url,
+            model=model,
             temperature=0.7,
             max_tokens=2048,
         ))
@@ -645,7 +668,7 @@ async def generate_node(state: RAGState) -> dict[str, Any]:
             await llm_service.close()
     else:
         # No valid API key - return placeholder
-        logger.warning("No valid DASHSCOPE_API_KEY - LLM generation disabled")
+        logger.warning("No valid API key configured - LLM generation disabled")
         llm_output = {
             "content": "这是一个示例回答。在生产环境中，这将由LLM生成。",
             "thinking_process": "",

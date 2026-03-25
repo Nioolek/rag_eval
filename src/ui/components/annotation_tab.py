@@ -14,9 +14,13 @@ from ...annotation.annotation_handler import get_annotation_handler
 from ...annotation.statistics import get_statistics
 from ...core.logging import logger
 
+# 全局缓存当前显示的标注ID列表
+_current_annotation_ids: list[str] = []
+
 
 def create_annotation_tab() -> None:
     """Create the annotation management tab with enhanced styling."""
+    global _current_annotation_ids
 
     # Header
     gr.Markdown("""
@@ -201,12 +205,16 @@ def create_annotation_tab() -> None:
 
     async def load_annotations(page: int, size: int, search: str = ""):
         """Load annotations with pagination and optional search."""
+        global _current_annotation_ids
         handler = await get_annotation_handler()
 
         if search:
             result = await handler.search(search, page=page, page_size=size)
         else:
             result = await handler.list(page=page, page_size=size)
+
+        # 缓存当前显示的标注ID
+        _current_annotation_ids = [ann.id for ann in result.items]
 
         data = []
         for ann in result.items:
@@ -218,39 +226,42 @@ def create_annotation_tab() -> None:
                 ann.created_at.strftime("%Y-%m-%d %H:%M"),
             ])
 
-        page_info = f"📊 总计：{result.total} 条 | 第 {page}/{(result.total + size - 1) // size} 页"
+        page_info = f"📊 总计：{result.total} 条 | 第 {page}/{max(1, (result.total + size - 1) // size)} 页"
         return (
             gr.update(value=data),
             page_info,
         )
 
-    async def load_annotation_detail(selected_data):
+    async def load_annotation_detail(evt: gr.SelectData):
         """Load annotation detail when a row is selected."""
-        # Gradio 6.x: selected_data from DataFrame is a list, not empty check needs proper handling
-        if selected_data is None or not isinstance(selected_data, (list, tuple)) or len(selected_data) == 0:
+        global _current_annotation_ids
+
+        logger.info(f"Select event triggered: index={evt.index}")
+
+        if evt.index is None:
+            logger.warning("No row selected")
             return [gr.update() for _ in range(12)]
 
-        # Gradio 6.x may return nested list
-        if isinstance(selected_data[0], (list, tuple)):
-            selected_data = selected_data[0]
+        # evt.index 是 [row, col] 格式
+        row_index = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+        logger.info(f"Selected row index: {row_index}, cached IDs: {len(_current_annotation_ids)}")
 
-        if not selected_data or len(selected_data) == 0:
+        # 使用缓存的ID列表
+        if row_index < 0 or row_index >= len(_current_annotation_ids):
+            logger.warning(f"Row index {row_index} out of range (cached: {len(_current_annotation_ids)})")
             return [gr.update() for _ in range(12)]
 
-        # Get ID from first column
-        short_id = selected_data[0]
+        ann_id = _current_annotation_ids[row_index]
+        logger.info(f"Looking up annotation ID: {ann_id}")
+
         handler = await get_annotation_handler()
-
-        # Search by ID prefix
-        all_anns = await handler.list(page=1, page_size=100)
-        ann = None
-        for a in all_anns.items:
-            if a.id.startswith(short_id.rstrip("...")):
-                ann = a
-                break
+        ann = await handler.get(ann_id)
 
         if not ann:
+            logger.warning(f"Annotation not found: {ann_id}")
             return [gr.update() for _ in range(12)]
+
+        logger.info(f"Found annotation: {ann.id}")
 
         return [
             gr.update(value=ann.id),
@@ -258,13 +269,13 @@ def create_annotation_tab() -> None:
             gr.update(value=ann.language.value),
             gr.update(value=ann.agent_id),
             gr.update(value=ann.enable_thinking),
-            gr.update(value="\n".join(ann.conversation_history)),
-            gr.update(value="\n".join(ann.gt_documents)),
+            gr.update(value="\n".join(ann.conversation_history or [])),
+            gr.update(value="\n".join(ann.gt_documents or [])),
             gr.update(value=ann.faq_matched),
             gr.update(value=ann.should_refuse),
-            gr.update(value="\n".join(ann.standard_answers)),
-            gr.update(value=ann.answer_style),
-            gr.update(value=ann.notes),
+            gr.update(value="\n".join(ann.standard_answers or [])),
+            gr.update(value=ann.answer_style or ""),
+            gr.update(value=ann.notes or ""),
         ]
 
     async def save_annotation(
@@ -374,9 +385,9 @@ def create_annotation_tab() -> None:
         outputs=[annotation_list, total_count],
     )
 
+    # Gradio 6.x: select 事件自动传递 SelectData 对象
     annotation_list.select(
         fn=load_annotation_detail,
-        inputs=[annotation_list],
         outputs=[
             annotation_id, query_input, language_select, agent_id_input,
             thinking_checkbox, conversation_history, gt_documents,
@@ -410,6 +421,12 @@ def create_annotation_tab() -> None:
         fn=delete_annotation,
         inputs=[annotation_id],
         outputs=[status_msg],
+    )
+
+    # 页面加载时自动加载数据
+    annotation_list.load(
+        fn=lambda: load_annotations(1, 20, ""),
+        outputs=[annotation_list, total_count],
     )
 
     # 返回需要初始化加载的组件和函数

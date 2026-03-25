@@ -231,6 +231,7 @@ class FAQStore(SearchableKeyValueStore):
     async def _exact_search(self, query: str, top_k: int) -> list[dict[str, Any]]:
         """Exact text matching search."""
         query_lower = query.lower().strip()
+        query_words = set(query_lower.split())
 
         cursor = await self._db.execute(
             """
@@ -238,21 +239,48 @@ class FAQStore(SearchableKeyValueStore):
             WHERE LOWER(question) LIKE ? OR LOWER(keywords) LIKE ?
             LIMIT ?
             """,
-            (f"%{query_lower}%", f"%{query_lower}%", top_k),
+            (f"%{query_lower}%", f"%{query_lower}%", top_k * 2),
         )
         rows = await cursor.fetchall()
 
         results = []
         for row in rows:
             faq = self._row_to_dict(row)
-            # Calculate simple similarity score
             question_lower = faq["question"].lower()
+            question_words = set(question_lower.split())
+
+            # Calculate Jaccard-like similarity for better matching
+            # Score based on:
+            # 1. Exact match (highest)
+            # 2. Query is substring of question (high)
+            # 3. Word overlap ratio (medium)
+            # 4. Single keyword match (low)
+
             if query_lower == question_lower:
                 score = 1.0
-            elif query_lower in question_lower or question_lower in query_lower:
-                score = 0.8
+            elif query_lower in question_lower:
+                # Check if query is a meaningful substring
+                score = 0.9
             else:
-                score = 0.5
+                # Calculate word overlap
+                common_words = query_words & question_words
+                if not common_words:
+                    # No word overlap at all
+                    continue
+
+                # Jaccard similarity: intersection / union
+                union_words = query_words | question_words
+                jaccard = len(common_words) / len(union_words) if union_words else 0
+
+                # Also consider what fraction of query words matched
+                query_coverage = len(common_words) / len(query_words) if query_words else 0
+
+                # Combined score: prefer high query coverage and high Jaccard
+                # At least 50% of query words must match
+                if query_coverage < 0.5:
+                    continue
+
+                score = 0.4 * jaccard + 0.6 * query_coverage
 
             if score >= self.match_threshold:
                 results.append({

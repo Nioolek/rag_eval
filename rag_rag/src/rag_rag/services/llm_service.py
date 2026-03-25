@@ -1,14 +1,16 @@
 """
 LLM Service Implementation.
 
-Alibaba Qwen integration for text generation and query understanding.
+OpenAI-compatible API integration for text generation and query understanding.
+Supports Alibaba Cloud Coding Plan and other OpenAI-compatible endpoints.
 """
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Optional
 
+from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from rag_rag.core.exceptions import LLMServiceError, RateLimitError
@@ -22,6 +24,7 @@ class LLMConfig:
     """LLM service configuration."""
 
     api_key: str = ""
+    base_url: str = "https://coding.dashscope.aliyuncs.com/v1"
     model: str = "qwen-plus"
     temperature: float = 0.7
     max_tokens: int = 2048
@@ -36,48 +39,54 @@ class LLMOutput:
 
     content: str
     thinking_process: str = ""
-    token_usage: dict[str, int] = None
+    token_usage: dict[str, int] = field(default_factory=dict)
     model: str = ""
     finish_reason: str = ""
-
-    def __post_init__(self):
-        if self.token_usage is None:
-            self.token_usage = {}
 
 
 class LLMService:
     """
-    LLM Service with Alibaba Qwen backend.
+    LLM Service with OpenAI-compatible backend.
 
     Features:
     - Text generation with thinking mode
     - Streaming support
     - Retry with exponential backoff
     - Rate limit handling
+    - Supports Alibaba Cloud Coding Plan and other OpenAI-compatible APIs
     """
 
     def __init__(self, config: LLMConfig):
         self.config = config
-        self._client: Optional[Any] = None
+        self._client: Optional[AsyncOpenAI] = None
 
     async def initialize(self) -> None:
         """Initialize the LLM client."""
         try:
-            import dashscope
-            from dashscope import Generation
+            if not self.config.api_key:
+                raise LLMServiceError(
+                    "API key not configured. Set OPENAI_API_KEY environment variable."
+                )
 
-            dashscope.api_key = self.config.api_key
-            self._client = Generation
-            logger.info(f"LLM Service initialized: {self.config.model}")
-
-        except ImportError:
-            raise LLMServiceError(
-                "dashscope not installed. Install with: pip install dashscope"
+            self._client = AsyncOpenAI(
+                api_key=self.config.api_key,
+                base_url=self.config.base_url,
+                timeout=self.config.timeout,
+                max_retries=self.config.max_retries,
             )
+            logger.info(
+                f"LLM Service initialized: {self.config.model} "
+                f"(base_url: {self.config.base_url})"
+            )
+
+        except Exception as e:
+            raise LLMServiceError(f"Failed to initialize LLM client: {e}")
 
     async def close(self) -> None:
         """Close the LLM client."""
-        self._client = None
+        if self._client:
+            await self._client.close()
+            self._client = None
 
     @retry(
         stop=stop_after_attempt(3),
@@ -118,44 +127,33 @@ class LLMService:
         # Add user message
         messages.append({"role": "user", "content": user_prompt})
 
-        # Build request parameters
-        params = {
-            "model": self.config.model,
-            "messages": messages,
-            "temperature": temperature or self.config.temperature,
-            "max_tokens": max_tokens or self.config.max_tokens,
-            "result_format": "message",
-        }
-
-        # Enable thinking mode if requested
-        if enable_thinking:
-            params["enable_thinking"] = True
-
         try:
-            # Run in executor for sync API
-            response = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self._client.call(**params),
+            # Build extra body for thinking mode (provider-specific)
+            extra_body = {}
+            if enable_thinking:
+                # Some providers support thinking mode via extra parameters
+                extra_body["enable_thinking"] = True
+
+            response = await self._client.chat.completions.create(
+                model=self.config.model,
+                messages=messages,
+                temperature=temperature or self.config.temperature,
+                max_tokens=max_tokens or self.config.max_tokens,
+                extra_body=extra_body if extra_body else None,
             )
 
-            if response.status_code != 200:
-                if response.code == "RateLimit":
-                    raise RateLimitError(
-                        f"Rate limit exceeded: {response.message}",
-                        retry_after=60,
-                    )
-                raise LLMServiceError(
-                    f"LLM API error: {response.code} - {response.message}"
-                )
-
             # Parse response
-            output = response.output
-            content = output.choices[0].message.content
-            thinking = output.choices[0].message.get("thinking", "")
+            choice = response.choices[0]
+            content = choice.message.content or ""
+
+            # Try to extract thinking process if available
+            thinking = ""
+            if hasattr(choice.message, "model_extra") and choice.message.model_extra:
+                thinking = choice.message.model_extra.get("thinking", "")
 
             usage = {
-                "prompt_tokens": response.usage.input_tokens,
-                "completion_tokens": response.usage.output_tokens,
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
                 "total_tokens": response.usage.total_tokens,
             }
 
@@ -163,13 +161,17 @@ class LLMService:
                 content=content,
                 thinking_process=thinking,
                 token_usage=usage,
-                model=self.config.model,
-                finish_reason=output.choices[0].finish_reason,
+                model=response.model,
+                finish_reason=choice.finish_reason,
             )
 
-        except RateLimitError:
-            raise
         except Exception as e:
+            error_msg = str(e).lower()
+            if "rate limit" in error_msg or "429" in error_msg:
+                raise RateLimitError(
+                    f"Rate limit exceeded: {e}",
+                    retry_after=60,
+                )
             logger.error(f"LLM generation failed: {e}")
             raise LLMServiceError(f"LLM generation failed: {e}")
 
@@ -197,32 +199,23 @@ class LLMService:
 
         messages.append({"role": "user", "content": user_prompt})
 
-        params = {
-            "model": self.config.model,
-            "messages": messages,
-            "temperature": temperature or self.config.temperature,
-            "max_tokens": max_tokens or self.config.max_tokens,
-            "result_format": "message",
-            "stream": True,
-        }
-
-        if enable_thinking:
-            params["enable_thinking"] = True
-
         try:
-            responses = self._client.call(**params)
+            extra_body = {}
+            if enable_thinking:
+                extra_body["enable_thinking"] = True
 
-            for response in responses:
-                if response.status_code != 200:
-                    raise LLMServiceError(
-                        f"LLM API error: {response.code} - {response.message}"
-                    )
+            stream = await self._client.chat.completions.create(
+                model=self.config.model,
+                messages=messages,
+                temperature=temperature or self.config.temperature,
+                max_tokens=max_tokens or self.config.max_tokens,
+                stream=True,
+                extra_body=extra_body if extra_body else None,
+            )
 
-                # Yield content chunks
-                if response.output and response.output.choices:
-                    delta = response.output.choices[0].message.get("content", "")
-                    if delta:
-                        yield delta
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
 
         except Exception as e:
             logger.error(f"LLM streaming failed: {e}")
