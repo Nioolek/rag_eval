@@ -15,6 +15,14 @@ from ..core.config import get_config
 from ..core.exceptions import ConfigurationError, StorageError
 from ..core.logging import logger
 
+# Optional MySQL storage - only available if aiomysql is installed
+try:
+    from .mysql_storage import MySQLStorage
+    MYSQL_AVAILABLE = True
+except ImportError:
+    MySQLStorage = None  # type: ignore
+    MYSQL_AVAILABLE = False
+
 
 class StorageFactory:
     """
@@ -44,9 +52,9 @@ class StorageFactory:
         Create a storage backend instance.
 
         Args:
-            storage_type: "local" or "sqlite", defaults to config
+            storage_type: "local", "sqlite", or "mysql", defaults to config
             data_dir: Data directory for local storage
-            database_url: Database URL for SQLite
+            database_url: Database URL for SQLite/MySQL
             chunk_size: Chunk size for file operations
 
         Returns:
@@ -81,10 +89,29 @@ class StorageFactory:
                     # Default SQLite path
                     database_url = f"sqlite:///{data_dir}/rag_eval.db"
                 storage = SQLiteStorage(database_url=database_url)
+            elif storage_type == "mysql":
+                if not MYSQL_AVAILABLE:
+                    raise ConfigurationError(
+                        "MySQL storage requires aiomysql package. "
+                        "Install it with: pip install aiomysql"
+                    )
+                if not database_url:
+                    raise ConfigurationError(
+                        "DATABASE_URL is required for MySQL storage. "
+                        "Format: mysql+aiomysql://user:password@host:port/database"
+                    )
+                mysql_config = config.storage.mysql
+                storage = MySQLStorage(
+                    database_url=database_url,
+                    pool_size=mysql_config.pool_size if mysql_config else 10,
+                    max_overflow=mysql_config.max_overflow if mysql_config else 5,
+                    pool_recycle=mysql_config.pool_recycle if mysql_config else 3600,
+                    echo=mysql_config.echo if mysql_config else False,
+                )
             else:
                 raise ConfigurationError(
                     f"Unknown storage type: {storage_type}. "
-                    "Supported types: 'local', 'sqlite'"
+                    "Supported types: 'local', 'sqlite', 'mysql'"
                 )
 
             # Initialize storage

@@ -38,12 +38,22 @@ class RAGConfig:
 
 
 @dataclass(frozen=True)
+class MySQLConfig:
+    """MySQL-specific configuration."""
+    pool_size: int = 10
+    max_overflow: int = 5
+    pool_recycle: int = 3600
+    echo: bool = False
+
+
+@dataclass(frozen=True)
 class StorageConfig:
     """Storage configuration."""
-    storage_type: str = "sqlite"  # "local" or "sqlite"
+    storage_type: str = "sqlite"  # "local", "sqlite", or "mysql"
     data_dir: Path = field(default_factory=lambda: Path("./data"))
     database_url: Optional[str] = None
     chunk_size: int = 8192  # For chunked file operations
+    mysql: Optional[MySQLConfig] = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +99,16 @@ class Config:
         data_dir = Path(os.getenv("DATA_DIR", "./data"))
         database_url = os.getenv("DATABASE_URL")
 
+        # MySQL-specific configuration
+        mysql_config = None
+        if storage_type == "mysql":
+            mysql_config = MySQLConfig(
+                pool_size=int(os.getenv("MYSQL_POOL_SIZE", "10")),
+                max_overflow=int(os.getenv("MYSQL_MAX_OVERFLOW", "5")),
+                pool_recycle=int(os.getenv("MYSQL_POOL_RECYCLE", "3600")),
+                echo=os.getenv("MYSQL_ECHO", "false").lower() == "true",
+            )
+
         return cls(
             llm=LLMConfig(
                 api_key=openai_api_key,
@@ -109,6 +129,7 @@ class Config:
                 data_dir=data_dir,
                 database_url=database_url,
                 chunk_size=int(os.getenv("FILE_CHUNK_SIZE", "8192")),
+                mysql=mysql_config,
             ),
             ui=UIConfig(
                 server_name=os.getenv("GRADIO_SERVER_NAME", "0.0.0.0"),

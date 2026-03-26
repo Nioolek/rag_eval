@@ -19,6 +19,7 @@ from .components.evaluation_tab import create_evaluation_tab
 from .components.results_tab import create_results_tab
 from .components.comparison_tab import create_comparison_tab
 from .components.scheduler_tab import create_scheduler_tab
+from .components.single_run_tab import create_single_run_tab
 
 
 async def _cleanup_resources():
@@ -84,23 +85,27 @@ def create_app() -> gr.Blocks:
             with gr.TabItem("📝 标注管理", id="annotation"):
                 annotation_components = create_annotation_tab()
 
-            # Tab 2: 评测执行
+            # Tab 2: 单题运行
+            with gr.TabItem("🔬 单题运行", id="single_run"):
+                single_run_components = create_single_run_tab()
+
+            # Tab 3: 评测执行
             with gr.TabItem("⚡ 评测执行", id="evaluation"):
                 evaluation_components = create_evaluation_tab()
 
-            # Tab 3: 结果查看
+            # Tab 4: 结果查看
             with gr.TabItem("📈 结果查看", id="results"):
                 results_components = create_results_tab()
 
-            # Tab 4: 对比分析
+            # Tab 5: 对比分析
             with gr.TabItem("⚖️ 对比分析", id="comparison"):
                 comparison_components = create_comparison_tab()
 
-            # Tab 5: 标注统计
+            # Tab 6: 标注统计
             with gr.TabItem("📊 标注统计", id="statistics"):
                 statistics_components = create_statistics_tab()
 
-            # Tab 6: 定时任务
+            # Tab 7: 定时任务
             with gr.TabItem("⏰ 定时任务", id="scheduler"):
                 scheduler_components = create_scheduler_tab()
 
@@ -129,6 +134,10 @@ def create_app() -> gr.Blocks:
         async def _init_scheduler():
             """初始化定时任务列表"""
             return await scheduler_components["load_scheduled_tasks"]()
+
+        async def _init_single_run():
+            """初始化单题运行的测试集列表"""
+            return await single_run_components["load_test_set_annotations"]()
 
         app.load(
             fn=_init_annotations,
@@ -180,6 +189,12 @@ def create_app() -> gr.Blocks:
         app.load(
             fn=_init_scheduler,
             outputs=[scheduler_components["task_list"]],
+        )
+
+        # 初始化单题运行的测试集列表
+        app.load(
+            fn=_init_single_run,
+            outputs=[single_run_components["annotation_selector"]],
         )
 
         # ===== Footer =====

@@ -4,6 +4,7 @@ python-dotenv>=1.0.0
 pydantic>=2.0.0
 aiofiles>=23.0.0
 aiosqlite>=0.19.0
+aiomysql>=0.2.0
 
 # RAG Integration
 langgraph>=0.2.0
