@@ -332,6 +332,83 @@ class AnnotationHandler(BaseAnnotationHandler):
         annotation = Annotation.from_dict(version_data)
         return await self.update(annotation_id, annotation.to_dict())
 
+    async def list_by_dataset(
+        self,
+        dataset_id: str,
+        page: int = 1,
+        page_size: int = 50,
+        filters: Optional[dict[str, Any]] = None,
+    ) -> AnnotationList:
+        """
+        List annotations for a specific dataset.
+
+        Args:
+            dataset_id: Dataset ID
+            page: Page number
+            page_size: Items per page
+            filters: Additional filters
+
+        Returns:
+            AnnotationList for the dataset
+        """
+        combined_filters = {"dataset_id": dataset_id}
+        if filters:
+            combined_filters.update(filters)
+
+        return await self.list(page=page, page_size=page_size, filters=combined_filters)
+
+    async def count_by_dataset(self, dataset_id: str) -> int:
+        """
+        Count annotations in a dataset.
+
+        Args:
+            dataset_id: Dataset ID
+
+        Returns:
+            Number of annotations
+        """
+        return await self.storage.count(
+            self.COLLECTION,
+            filters={"dataset_id": dataset_id}
+        )
+
+    async def move_to_dataset(
+        self,
+        annotation_ids: list[str],
+        target_dataset_id: str,
+    ) -> int:
+        """
+        Move annotations to a different dataset.
+
+        Args:
+            annotation_ids: List of annotation IDs to move
+            target_dataset_id: Target dataset ID
+
+        Returns:
+            Number of annotations moved
+        """
+        moved = 0
+        for ann_id in annotation_ids:
+            # Check if annotation exists
+            annotation = await self.get(ann_id)
+            if not annotation:
+                logger.warning(f"Annotation {ann_id} not found, skipping")
+                continue
+
+            success = await self.storage.update(
+                self.COLLECTION,
+                ann_id,
+                {
+                    "dataset_id": target_dataset_id,
+                    "updated_at": datetime.now().isoformat(),
+                }
+            )
+            if success:
+                moved += 1
+
+        logger.info(f"Moved {moved} annotations to dataset {target_dataset_id}")
+        return moved
+
 
 # Singleton handler instance
 _handler_instance: Optional[AnnotationHandler] = None

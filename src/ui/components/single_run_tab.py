@@ -15,6 +15,7 @@ from ...models.metric_result import MetricCategory
 from ...evaluation.metrics.metric_registry import get_registry
 from ...evaluation.metrics.base import MetricContext
 from ...annotation.annotation_handler import get_annotation_handler
+from ...annotation.dataset_handler import get_dataset_handler
 from ...rag.mock_adapter import MockRAGAdapter
 from ...rag.langgraph_adapter import LangGraphAdapter
 from ...rag.base_adapter import RAGAdapterConfig, StreamingChunk
@@ -89,6 +90,20 @@ def create_single_run_tab() -> dict:
         # Test set selection mode (initially hidden)
         with gr.Group(visible=False) as test_set_group:
             with gr.Row():
+                test_dataset_selector = gr.Dropdown(
+                    label="数据集",
+                    choices=[],
+                    interactive=True,
+                    scale=2,
+                )
+                refresh_test_datasets_btn = gr.Button(
+                    "刷新数据集",
+                    variant="secondary",
+                    size="sm",
+                    scale=1,
+                )
+
+            with gr.Row():
                 annotation_selector = gr.Dropdown(
                     label="选择测试数据",
                     choices=[],
@@ -96,7 +111,7 @@ def create_single_run_tab() -> dict:
                     scale=3,
                 )
                 refresh_annotations_btn = gr.Button(
-                    "🔄 刷新列表",
+                    "刷新列表",
                     variant="secondary",
                     size="sm",
                     scale=1,
@@ -443,10 +458,22 @@ def create_single_run_tab() -> dict:
                 summary += f"| {data.get('name', key)} | {score:.2%} | {status} |\n"
         return summary
 
-    async def load_test_set_annotations():
+    async def load_test_dataset_choices():
+        """Load dataset choices for test set dropdown."""
+        handler = await get_dataset_handler()
+        choices = await handler.get_choices_for_ui()
+        # Get default dataset
+        default = await handler.get_default()
+        return gr.update(choices=choices, value=default.id)
+
+    async def load_test_set_annotations(dataset_id: str = ""):
         """Load annotations for test set selection."""
         handler = await get_annotation_handler()
-        ann_list = await handler.list(page=1, page_size=100)
+
+        if dataset_id:
+            ann_list = await handler.list_by_dataset(dataset_id, page=1, page_size=100)
+        else:
+            ann_list = await handler.list(page=1, page_size=100)
 
         choices = [
             (f"{a.id[:8]} - {a.query[:50]}{'...' if len(a.query) > 50 else ''}", a.id)
@@ -455,6 +482,10 @@ def create_single_run_tab() -> dict:
         ]
 
         return gr.update(choices=choices)
+
+    async def on_dataset_change_for_test(dataset_id: str):
+        """Handle dataset change for test set mode."""
+        return await load_test_set_annotations(dataset_id)
 
     async def on_annotation_selected(annotation_id: str):
         """Handle annotation selection - display GT info."""
@@ -872,8 +903,20 @@ def create_single_run_tab() -> dict:
         show_progress='hidden',
     )
 
+    refresh_test_datasets_btn.click(
+        fn=load_test_dataset_choices,
+        outputs=[test_dataset_selector],
+    )
+
+    test_dataset_selector.change(
+        fn=on_dataset_change_for_test,
+        inputs=[test_dataset_selector],
+        outputs=[annotation_selector],
+    )
+
     refresh_annotations_btn.click(
-        fn=load_test_set_annotations,
+        fn=on_dataset_change_for_test,
+        inputs=[test_dataset_selector],
         outputs=[annotation_selector],
     )
 
@@ -950,5 +993,7 @@ def create_single_run_tab() -> dict:
     # Return components for initialization
     return {
         "annotation_selector": annotation_selector,
+        "test_dataset_selector": test_dataset_selector,
         "load_test_set_annotations": load_test_set_annotations,
+        "load_test_dataset_choices": load_test_dataset_choices,
     }

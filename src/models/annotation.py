@@ -48,6 +48,7 @@ class Annotation(BaseModel):
         description="Multi-turn conversation history"
     )
     agent_id: str = Field(default="default", description="Agent identifier")
+    dataset_id: str = Field(default="default", description="Dataset this annotation belongs to")
     language: Language = Field(default=Language.AUTO, description="Query language")
     enable_thinking: bool = Field(default=False, description="Enable thinking mode")
 
@@ -112,6 +113,7 @@ class Annotation(BaseModel):
             "query": self.query,
             "conversation_history": self.conversation_history,
             "agent_id": self.agent_id,
+            "dataset_id": self.dataset_id,
             "language": self.language.value,
             "enable_thinking": self.enable_thinking,
             "gt_documents": self.gt_documents,

@@ -11,22 +11,38 @@ import gradio as gr
 
 from ...models.annotation import Annotation, Language
 from ...annotation.annotation_handler import get_annotation_handler
+from ...annotation.dataset_handler import get_dataset_handler
 from ...annotation.statistics import get_statistics
 from ...core.logging import logger
 
 # 全局缓存当前显示的标注ID列表
 _current_annotation_ids: list[str] = []
+_current_dataset_id: str = ""
 
 
 def create_annotation_tab() -> None:
     """Create the annotation management tab with enhanced styling."""
-    global _current_annotation_ids
+    global _current_annotation_ids, _current_dataset_id
 
     # Header
     gr.Markdown("""
     ### 📋 标注数据管理
     管理用户查询标注数据，支持搜索、编辑、删除操作
     """)
+
+    # Dataset selector row
+    with gr.Row():
+        dataset_selector = gr.Dropdown(
+            label="数据集",
+            choices=[],
+            interactive=True,
+            scale=3,
+        )
+        refresh_datasets_btn = gr.Button(
+            "刷新数据集",
+            variant="secondary",
+            scale=1,
+        )
 
     with gr.Row():
         # Left column: List and search
@@ -213,15 +229,46 @@ def create_annotation_tab() -> None:
 
     # ===== Event Handlers =====
 
-    async def load_annotations(page: int, size: int, search: str = ""):
+    async def load_dataset_choices():
+        """Load dataset choices for dropdown."""
+        global _current_dataset_id
+        handler = await get_dataset_handler()
+        choices = await handler.get_choices_for_ui()
+
+        # Get default dataset
+        default = await handler.get_default()
+        _current_dataset_id = default.id
+
+        return gr.update(choices=choices, value=default.id)
+
+    async def on_dataset_change(dataset_id: str):
+        """Handle dataset change event."""
+        global _current_dataset_id
+        _current_dataset_id = dataset_id
+        # Reload annotations with new dataset
+        return await load_annotations(1, 20, "", dataset_id)
+
+    async def load_annotations(page: int, size: int, search: str = "", dataset_id: str = ""):
         """Load annotations with pagination and optional search."""
-        global _current_annotation_ids
+        global _current_annotation_ids, _current_dataset_id
+
+        # Use global dataset_id if not provided
+        if not dataset_id:
+            dataset_id = _current_dataset_id
+
         handler = await get_annotation_handler()
 
         if search:
             result = await handler.search(search, page=page, page_size=size)
+            # Filter by dataset_id in Python
+            if dataset_id:
+                result.items = [a for a in result.items if a.dataset_id == dataset_id]
+                result.total = len(result.items)
         else:
-            result = await handler.list(page=page, page_size=size)
+            if dataset_id:
+                result = await handler.list_by_dataset(dataset_id, page=page, page_size=size)
+            else:
+                result = await handler.list(page=page, page_size=size)
 
         # 缓存当前显示的标注ID
         _current_annotation_ids = [ann.id for ann in result.items]
@@ -298,6 +345,8 @@ def create_annotation_tab() -> None:
         faq, refuse, gt_docs, std_answers, style, note, conv_history
     ):
         """Save annotation (create or update)."""
+        global _current_dataset_id
+
         if not query:
             return "❌ 错误：查询不能为空"
 
@@ -308,6 +357,7 @@ def create_annotation_tab() -> None:
                 "query": query,
                 "language": Language(language) if language else Language.AUTO,
                 "agent_id": agent_id or "default",
+                "dataset_id": _current_dataset_id or "default",
                 "enable_thinking": thinking,
                 "conversation_history": [
                     l.strip() for l in conv_history.split("\n") if l.strip()
@@ -332,6 +382,11 @@ def create_annotation_tab() -> None:
                 # Create new
                 annotation = Annotation(**data)
                 new_id = await handler.create(annotation)
+
+                # Update dataset annotation count
+                dataset_handler = await get_dataset_handler()
+                await dataset_handler.update_annotation_count(_current_dataset_id)
+
                 return f"✅ 创建成功：<code>{new_id[:8]}...</code>"
 
         except Exception as e:
@@ -370,27 +425,48 @@ def create_annotation_tab() -> None:
 
     # ===== Connect Events =====
 
+    # Dataset selector events
+    refresh_datasets_btn.click(
+        fn=load_dataset_choices,
+        outputs=[dataset_selector],
+    )
+
+    dataset_selector.change(
+        fn=on_dataset_change,
+        inputs=[dataset_selector],
+        outputs=[annotation_list, total_count, page_num],
+    )
+
     async def search_annotations(p, s, q):
         """搜索标注数据"""
-        return await load_annotations(1, s, q)
+        return await load_annotations(1, s, q, _current_dataset_id)
 
     async def prev_page(p, s, q):
         """上一页"""
         new_page = max(1, int(p) - 1)
-        return await load_annotations(new_page, s, q)
+        return await load_annotations(new_page, s, q, _current_dataset_id)
 
     async def next_page(p, s, q):
         """下一页"""
         # 获取总数来计算最大页数
         handler = await get_annotation_handler()
-        if q:
-            result = await handler.search(q, page=1, page_size=1)
+        if _current_dataset_id:
+            if q:
+                result = await handler.search(q, page=1, page_size=1)
+                # Filter by dataset
+                all_items = [a for a in result.items if a.dataset_id == _current_dataset_id]
+                result.total = len(all_items)
+            else:
+                result = await handler.list_by_dataset(_current_dataset_id, page=1, page_size=1)
         else:
-            result = await handler.list(page=1, page_size=1)
+            if q:
+                result = await handler.search(q, page=1, page_size=1)
+            else:
+                result = await handler.list(page=1, page_size=1)
 
         total_pages = max(1, (result.total + s - 1) // s)
         new_page = min(total_pages, int(p) + 1)
-        return await load_annotations(new_page, s, q)
+        return await load_annotations(new_page, s, q, _current_dataset_id)
 
     search_btn.click(
         fn=search_annotations,
@@ -450,5 +526,7 @@ def create_annotation_tab() -> None:
         "annotation_list": annotation_list,
         "total_count": total_count,
         "page_num": page_num,
+        "dataset_selector": dataset_selector,
         "load_annotations": load_annotations,
+        "load_dataset_choices": load_dataset_choices,
     }

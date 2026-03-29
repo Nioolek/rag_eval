@@ -32,6 +32,11 @@ class AnnotationError(RAGEvalError):
     pass
 
 
+class DatasetError(RAGEvalError):
+    """Raised when dataset operations fail."""
+    pass
+
+
 class EvaluationError(RAGEvalError):
     """Raised when evaluation operations fail."""
     pass

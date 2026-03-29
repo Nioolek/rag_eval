@@ -20,6 +20,7 @@ from .components.results_tab import create_results_tab
 from .components.comparison_tab import create_comparison_tab
 from .components.scheduler_tab import create_scheduler_tab
 from .components.single_run_tab import create_single_run_tab
+from .components.dataset_tab import create_dataset_tab
 
 
 async def _cleanup_resources():
@@ -81,36 +82,48 @@ def create_app() -> gr.Blocks:
 
         # ===== Main Navigation Tabs =====
         with gr.Tabs(elem_classes=["main-tabs"]) as tabs:
-            # Tab 1: 标注管理
-            with gr.TabItem("📝 标注管理", id="annotation"):
+            # Tab 1: 数据集管理
+            with gr.TabItem("数据集管理", id="dataset"):
+                dataset_components = create_dataset_tab()
+
+            # Tab 2: 标注管理
+            with gr.TabItem("标注管理", id="annotation"):
                 annotation_components = create_annotation_tab()
 
-            # Tab 2: 单题运行
-            with gr.TabItem("🔬 单题运行", id="single_run"):
+            # Tab 3: 单题运行
+            with gr.TabItem("单题运行", id="single_run"):
                 single_run_components = create_single_run_tab()
 
-            # Tab 3: 评测执行
-            with gr.TabItem("⚡ 评测执行", id="evaluation"):
+            # Tab 4: 评测执行
+            with gr.TabItem("评测执行", id="evaluation"):
                 evaluation_components = create_evaluation_tab()
 
-            # Tab 4: 结果查看
-            with gr.TabItem("📈 结果查看", id="results"):
+            # Tab 5: 结果查看
+            with gr.TabItem("结果查看", id="results"):
                 results_components = create_results_tab()
 
-            # Tab 5: 对比分析
-            with gr.TabItem("⚖️ 对比分析", id="comparison"):
+            # Tab 6: 对比分析
+            with gr.TabItem("对比分析", id="comparison"):
                 comparison_components = create_comparison_tab()
 
-            # Tab 6: 标注统计
-            with gr.TabItem("📊 标注统计", id="statistics"):
+            # Tab 7: 标注统计
+            with gr.TabItem("标注统计", id="statistics"):
                 statistics_components = create_statistics_tab()
 
-            # Tab 7: 定时任务
-            with gr.TabItem("⏰ 定时任务", id="scheduler"):
+            # Tab 8: 定时任务
+            with gr.TabItem("定时任务", id="scheduler"):
                 scheduler_components = create_scheduler_tab()
 
         # ===== Page Load Events =====
         # 页面加载时自动初始化数据
+        async def _init_datasets():
+            """初始化数据集列表"""
+            return await dataset_components["load_datasets"]()
+
+        async def _init_annotation_datasets():
+            """初始化标注管理页面的数据集选择器"""
+            return await annotation_components["load_dataset_choices"]()
+
         async def _init_annotations():
             result = await annotation_components["load_annotations"](1, 20, "")
             return result  # 返回 (dataframe_update, total_count_update, page_num_update)
@@ -136,8 +149,12 @@ def create_app() -> gr.Blocks:
             return await scheduler_components["load_scheduled_tasks"]()
 
         async def _init_single_run():
-            """初始化单题运行的测试集列表"""
-            return await single_run_components["load_test_set_annotations"]()
+            """初始化单题运行的测试集列表和数据集选择器"""
+            return await single_run_components["load_test_dataset_choices"]()
+
+        async def _init_eval_datasets():
+            """初始化评测执行页面的数据集选择器"""
+            return await evaluation_components["load_eval_dataset_choices"]()
 
         app.load(
             fn=_init_annotations,
@@ -194,7 +211,25 @@ def create_app() -> gr.Blocks:
         # 初始化单题运行的测试集列表
         app.load(
             fn=_init_single_run,
-            outputs=[single_run_components["annotation_selector"]],
+            outputs=[single_run_components["test_dataset_selector"]],
+        )
+
+        # 初始化评测执行页面的数据集选择器
+        app.load(
+            fn=_init_eval_datasets,
+            outputs=[evaluation_components["eval_dataset_selector"]],
+        )
+
+        # 初始化数据集管理页面
+        app.load(
+            fn=_init_datasets,
+            outputs=[dataset_components["dataset_list"]],
+        )
+
+        # 初始化标注管理页面的数据集选择器
+        app.load(
+            fn=_init_annotation_datasets,
+            outputs=[annotation_components["dataset_selector"]],
         )
 
         # ===== Footer =====

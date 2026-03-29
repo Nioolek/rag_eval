@@ -14,6 +14,7 @@ from ...evaluation.metrics.metric_registry import get_registry
 from ...models.metric_result import MetricCategory
 from ...evaluation.result_manager import get_result_manager
 from ...annotation.annotation_handler import get_annotation_handler
+from ...annotation.dataset_handler import get_dataset_handler
 from ...rag.mock_adapter import MockRAGAdapter
 from ...core.logging import logger
 
@@ -26,6 +27,20 @@ def create_evaluation_tab() -> None:
     ### 🚀 RAG 评测配置与执行
     配置评测参数、选择指标、执行批量评测任务
     """)
+
+    # Dataset selector
+    with gr.Row():
+        eval_dataset_selector = gr.Dropdown(
+            label="数据集",
+            choices=[],
+            interactive=True,
+            scale=3,
+        )
+        refresh_eval_datasets_btn = gr.Button(
+            "刷新数据集",
+            variant="secondary",
+            scale=1,
+        )
 
     with gr.Row():
         # Left column: Configuration
@@ -192,6 +207,14 @@ def create_evaluation_tab() -> None:
 
     # ===== Event Handlers =====
 
+    async def load_eval_dataset_choices():
+        """Load dataset choices for evaluation dropdown."""
+        handler = await get_dataset_handler()
+        choices = await handler.get_choices_for_ui()
+        # Get default dataset
+        default = await handler.get_default()
+        return gr.update(choices=choices, value=default.id)
+
     def toggle_dual_mode(is_dual):
         """Toggle dual mode visibility."""
         # In Gradio 6.x, need to explicitly set interactive when making visible
@@ -220,6 +243,7 @@ def create_evaluation_tab() -> None:
         )
 
     async def start_evaluation(
+        dataset_id,
         dual, url1, url2,
         ret_m, gen_m, faq_m, comp_m,
         conc, timeout, name
@@ -270,9 +294,17 @@ def create_evaluation_tab() -> None:
             runner.set_rag_adapter(adapter2, "interface_2")
             interfaces = ["default", "interface_2"]
 
-        # Get annotations
+        # Get annotations from selected dataset
         handler = await get_annotation_handler()
-        ann_list = await handler.list(page=1, page_size=1000)
+
+        if dataset_id:
+            ann_list = await handler.list_by_dataset(dataset_id, page=1, page_size=1000)
+        else:
+            # Use default dataset if not specified
+            dataset_handler = await get_dataset_handler()
+            default_dataset = await dataset_handler.get_default()
+            ann_list = await handler.list_by_dataset(default_dataset.id, page=1, page_size=1000)
+
         annotations = ann_list.items
 
         if not annotations:
@@ -397,6 +429,7 @@ def create_evaluation_tab() -> None:
     start_btn.click(
         fn=start_evaluation,
         inputs=[
+            eval_dataset_selector,
             dual_mode, rag_url_1, rag_url_2,
             retrieval_metrics, generation_metrics, faq_metrics, comprehensive_metrics,
             concurrency, eval_timeout, run_name,
@@ -414,8 +447,15 @@ def create_evaluation_tab() -> None:
         outputs=[results_table],
     )
 
+    refresh_eval_datasets_btn.click(
+        fn=load_eval_dataset_choices,
+        outputs=[eval_dataset_selector],
+    )
+
     # 返回需要初始化加载的组件和函数
     return {
         "results_table": results_table,
         "load_recent_results": load_recent_results,
+        "eval_dataset_selector": eval_dataset_selector,
+        "load_eval_dataset_choices": load_eval_dataset_choices,
     }
